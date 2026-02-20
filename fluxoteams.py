@@ -29,6 +29,33 @@ GRUPOS_OPCOES = [
     "Verificar"
 ]
 
+def buscar_unidades_gestao_faturas():
+    conn = mysql.connector.connect(**DB_CONFIG)
+
+    query = """
+        SELECT * FROM tb_clientes_gestao_faturas
+        WHERE UTILIDADE = 'ENERGIA'
+        AND STATUS_UNIDADE = 'Ativa';
+    """
+
+    df_unidades = pd.read_sql(query, conn)
+    conn.close()
+    return df_unidades
+
+def buscar_faturas_lidas_gestao_faturas():
+    conn = mysql.connector.connect(**DB_CONFIG)
+
+    query = """
+        SELECT * FROM tb_dfat_gestao_faturas_energia_novo
+    """
+
+    df_unidades = pd.read_sql(query, conn)
+    conn.close()
+    return df_unidades
+
+
+
+
 # ==========================================================
 # CONFIGURAÇÕES GERAIS
 # ==========================================================
