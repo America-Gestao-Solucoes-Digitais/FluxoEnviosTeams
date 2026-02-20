@@ -81,30 +81,67 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
+def _celula(texto, negrito=False, alinhamento="Left"):
+    return {
+        "type": "TableCell",
+        "items": [{
+            "type": "TextBlock",
+            "text": str(texto),
+            "weight": "Bolder" if negrito else "Default",
+            "horizontalAlignment": alinhamento,
+            "wrap": False
+        }]
+    }
+
+
 def montar_card_teams(df):
     """
-    Monta um Adaptive Card formatado para envio via webhook.
+    Monta um Adaptive Card com tabela para envio via webhook.
     """
     amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
 
+    # Linha de cabeçalho
+    cabecalho = {
+        "type": "TableRow",
+        "style": "accent",
+        "cells": [
+            _celula("Unidade", negrito=True),
+            _celula("Instalação", negrito=True, alinhamento="Center"),
+            _celula("Vencimento", negrito=True, alinhamento="Center"),
+            _celula("Valor (R$)", negrito=True, alinhamento="Right"),
+        ]
+    }
+
     if df.empty:
-        facts = [{"title": "Resultado", "value": "Nenhum vencimento encontrado para amanhã."}]
-        total_text = ""
+        linhas_tabela = [{
+            "type": "TableRow",
+            "cells": [
+                _celula("Nenhum vencimento encontrado para amanhã."),
+                _celula("—", alinhamento="Center"),
+                _celula("—", alinhamento="Center"),
+                _celula("—", alinhamento="Right"),
+            ]
+        }]
+        total_fmt = "R$ 0,00"
     else:
-        facts = []
+        linhas_tabela = []
         for _, row in df.iterrows():
             nome = str(row.get("NOME_UNIDADE", "—"))
             instalacao = str(row.get("COD_INSTALACAO", "—"))
-            valor = float(row.get("VALOR", 0))
+            valor = float(row.get("VALOR_TOTAL", 0))
             valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            facts.append({
-                "title": nome,
-                "value": f"Instalação: {instalacao} | Vencimento: {amanha} | {valor_fmt}"
+            linhas_tabela.append({
+                "type": "TableRow",
+                "cells": [
+                    _celula(nome),
+                    _celula(instalacao, alinhamento="Center"),
+                    _celula(amanha, alinhamento="Center"),
+                    _celula(valor_fmt, alinhamento="Right"),
+                ]
             })
 
-        total = float(df["VALOR"].sum())
+        total = float(df["VALOR_TOTAL"].sum())
         total_fmt = f"R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        total_text = f"**Total geral: {total_fmt}**"
 
     card = {
         "type": "message",
@@ -114,7 +151,7 @@ def montar_card_teams(df):
                 "content": {
                     "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                     "type": "AdaptiveCard",
-                    "version": "1.4",
+                    "version": "1.5",
                     "body": [
                         {
                             "type": "TextBlock",
@@ -130,19 +167,27 @@ def montar_card_teams(df):
                             "spacing": "None"
                         },
                         {
-                            "type": "FactSet",
-                            "facts": facts,
-                            "spacing": "Medium"
+                            "type": "Table",
+                            "gridStyle": "accent",
+                            "firstRowAsHeader": True,
+                            "showGridLines": True,
+                            "spacing": "Medium",
+                            "columns": [
+                                {"width": 4},
+                                {"width": 2},
+                                {"width": 2},
+                                {"width": 2},
+                            ],
+                            "rows": [cabecalho, *linhas_tabela]
                         },
-                        *(
-                            [{
-                                "type": "TextBlock",
-                                "text": total_text,
-                                "weight": "Bolder",
-                                "spacing": "Medium",
-                                "separator": True
-                            }] if total_text else []
-                        )
+                        {
+                            "type": "TextBlock",
+                            "text": f"**Total geral: {total_fmt}**",
+                            "weight": "Bolder",
+                            "horizontalAlignment": "Right",
+                            "spacing": "Small",
+                            "separator": True
+                        }
                     ]
                 }
             }
@@ -159,6 +204,8 @@ def enviar_via_webhook(card):
         headers={"Content-Type": "application/json"},
         timeout=10,
     )
+    print(f"      Status: {resp.status_code}")
+    print(f"      Resposta: {resp.text[:500]}")
     resp.raise_for_status()
 
 
