@@ -1,4 +1,5 @@
 import os
+import json
 import pandas as pd
 import mysql.connector
 import requests
@@ -64,7 +65,7 @@ def buscar_vencimentos_amanha():
             f.COD_INSTALACAO,
             f.DATA_VENCIMENTO,
             f.VALOR_TOTAL,
-            c.NOME_UNIDADE
+            c.GRUPO
         FROM tb_dfat_gestao_faturas_energia_novo AS f
         INNER JOIN tb_clientes_gestao_faturas AS c
             ON f.COD_INSTALACAO = c.INSTALACAO_MATRICULA
@@ -81,120 +82,66 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
-def _celula(texto, negrito=False, alinhamento="Left"):
+def _linha_tabela(grupo, instalacao, vencimento, valor, cabecalho=False):
+    peso = "Bolder" if cabecalho else "Default"
     return {
-        "type": "TableCell",
-        "items": [{
-            "type": "TextBlock",
-            "text": str(texto),
-            "weight": "Bolder" if negrito else "Default",
-            "horizontalAlignment": alinhamento,
-            "wrap": False
-        }]
-    }
-
-
-def montar_card_teams(df):
-    """
-    Monta um Adaptive Card com tabela para envio via webhook.
-    """
-    amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
-
-    # Linha de cabeçalho
-    cabecalho = {
-        "type": "TableRow",
-        "style": "accent",
-        "cells": [
-            _celula("Unidade", negrito=True),
-            _celula("Instalação", negrito=True, alinhamento="Center"),
-            _celula("Vencimento", negrito=True, alinhamento="Center"),
-            _celula("Valor (R$)", negrito=True, alinhamento="Right"),
+        "type": "ColumnSet",
+        "columns": [
+            {"type": "Column", "width": 4, "items": [{"type": "TextBlock", "text": str(grupo), "weight": peso, "wrap": True}]},
+            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(instalacao), "weight": peso, "horizontalAlignment": "Center"}]},
+            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(vencimento), "weight": peso, "horizontalAlignment": "Center"}]},
+            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(valor), "weight": peso, "horizontalAlignment": "Right"}]},
         ]
     }
 
+
+def montar_mensagem_teams(df):
+    amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+
     if df.empty:
-        linhas_tabela = [{
-            "type": "TableRow",
-            "cells": [
-                _celula("Nenhum vencimento encontrado para amanhã."),
-                _celula("—", alinhamento="Center"),
-                _celula("—", alinhamento="Center"),
-                _celula("—", alinhamento="Right"),
-            ]
-        }]
+        corpo = [{"type": "TextBlock", "text": "Nenhuma fatura encontrada para amanhã.", "isSubtle": True}]
         total_fmt = "R$ 0,00"
     else:
-        linhas_tabela = []
-        for _, row in df.iterrows():
-            nome = str(row.get("NOME_UNIDADE", "—"))
-            instalacao = str(row.get("COD_INSTALACAO", "—"))
-            valor = float(row.get("VALOR_TOTAL", 0))
-            valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linhas_tabela.append({
-                "type": "TableRow",
-                "cells": [
-                    _celula(nome),
-                    _celula(instalacao, alinhamento="Center"),
-                    _celula(amanha, alinhamento="Center"),
-                    _celula(valor_fmt, alinhamento="Right"),
-                ]
-            })
-
         total = float(df["VALOR_TOTAL"].sum())
         total_fmt = f"R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-    card = {
-        "type": "message",
-        "attachments": [
+        corpo = [_linha_tabela("Grupo", "Instalação", "Vencimento", "Valor (R$)", cabecalho=True)]
+        corpo.append({"type": "separator"})
+
+        for _, row in df.iterrows():
+            valor = float(row.get("VALOR_TOTAL", 0))
+            valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            corpo.append(_linha_tabela(
+                row.get("GRUPO", "—"),
+                row.get("COD_INSTALACAO", "—"),
+                amanha,
+                valor_fmt
+            ))
+
+    card_content = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": [
             {
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": {
-                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                    "type": "AdaptiveCard",
-                    "version": "1.5",
-                    "body": [
-                        {
-                            "type": "TextBlock",
-                            "text": f"📅 Vencimentos para amanhã — {amanha}",
-                            "weight": "Bolder",
-                            "size": "Large",
-                            "color": "Accent"
-                        },
-                        {
-                            "type": "TextBlock",
-                            "text": f"{len(df)} fatura(s) encontrada(s)",
-                            "isSubtle": True,
-                            "spacing": "None"
-                        },
-                        {
-                            "type": "Table",
-                            "gridStyle": "accent",
-                            "firstRowAsHeader": True,
-                            "showGridLines": True,
-                            "spacing": "Medium",
-                            "columns": [
-                                {"width": 4},
-                                {"width": 2},
-                                {"width": 2},
-                                {"width": 2},
-                            ],
-                            "rows": [cabecalho, *linhas_tabela]
-                        },
-                        {
-                            "type": "TextBlock",
-                            "text": f"**Total geral: {total_fmt}**",
-                            "weight": "Bolder",
-                            "horizontalAlignment": "Right",
-                            "spacing": "Small",
-                            "separator": True
-                        }
-                    ]
-                }
-            }
+                "type": "TextBlock",
+                "text": f"Vencimentos para amanha - {amanha}",
+                "weight": "Bolder",
+                "size": "Large",
+                "color": "Accent"
+            },
+            {
+                "type": "TextBlock",
+                "text": f"{len(df)} fatura(s) | Total: {total_fmt}",
+                "isSubtle": True,
+                "spacing": "None"
+            },
+            {"type": "separator"},
+            *corpo
         ]
     }
 
-    return card
+    return {"message": json.dumps(card_content, ensure_ascii=False)}
 
 
 def enviar_via_webhook(card):
@@ -222,10 +169,10 @@ def executar_fluxo():
     print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
     print("\n[2/3] Montando mensagem...")
-    card = montar_card_teams(df_vencimentos)
+    mensagem = montar_mensagem_teams(df_vencimentos)
 
     print("\n[3/3] Enviando para o Teams via Webhook...")
-    enviar_via_webhook(card)
+    enviar_via_webhook(mensagem)
     print("      Mensagem enviada com sucesso!")
 
     print("\n" + "=" * 50)
