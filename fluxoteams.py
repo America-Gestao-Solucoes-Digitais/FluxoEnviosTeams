@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import pandas as pd
 import mysql.connector
 import requests
@@ -18,7 +19,11 @@ DB_CONFIG = {
     "database": os.getenv("DB_NAME")
 }
 
-TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL")
+AZURE_TENANT_ID     = os.getenv("AZURE_TENANT_ID")
+AZURE_CLIENT_ID     = os.getenv("AZURE_CLIENT_ID")
+AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
+TEAMS_USER_EMAIL    = os.getenv("TEAMS_USER_EMAIL", "guilherme.garcia@voraenergia.com.br")
+TEAMS_CHAT_ID       = os.getenv("TEAMS_CHAT_ID")
 
 
 # ==========================================================
@@ -70,6 +75,16 @@ def buscar_unidades_sem_emissao():
         ORDER BY DIAS_SEM_EMISSAO DESC
     """
     df = pd.read_sql(query, conn)
+
+    # Filtrando apenas os clientes MAGAZINE LUIZA, DASA, PERNAMBUCANAS, ABIJCSUD, RENNER, GRUPO MIME, PEPSICO, SANTANDER, MARISA e KORA
+    df = df[df["GRUPO"].str.contains("MAGAZINE LUIZA|DASA|PERNAMBUCANAS|ABIJCSUD|RENNER|GRUPO MIME|PEPSICO|SANTANDER|MARISA|KORA", case=False, na=False)].reset_index(drop=True)
+
+    # Deixando a coluna Dias sem emissao como inteiro (em vez de float)
+    df["DIAS_SEM_EMISSAO"] = df["DIAS_SEM_EMISSAO"].fillna(0).astype(int)
+
+    # Desconsiderando as datas de emissão vazias
+    df = df[~df["ULTIMA_EMISSAO"].isna()].reset_index(drop=True)
+
     conn.close()
     return df
 
@@ -79,11 +94,6 @@ def buscar_vencimentos_amanha():
     Busca as faturas com vencimento amanhã, fazendo JOIN entre:
       - tb_dfat_gestao_faturas_energia_novo  (coluna COD_INSTALACAO)
       - tb_clientes_gestao_faturas           (coluna INSTALACAO_MATRICULA)
-
-    Ajuste os nomes das colunas se necessário:
-      - VENCIMENTO   -> data de vencimento da fatura
-      - VALOR        -> valor da fatura
-      - NOME_UNIDADE -> nome da unidade/cliente
     """
     amanha = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -108,9 +118,93 @@ def buscar_vencimentos_amanha():
 
 
 # ==========================================================
-# MICROSOFT TEAMS — WEBHOOK
+# MICROSOFT TEAMS — GRAPH API
 # ==========================================================
 LOTE_TAMANHO = 20
+
+
+def obter_token():
+    """Obtém token de acesso via client credentials (Application permissions)."""
+    url = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/oauth2/v2.0/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": AZURE_CLIENT_ID,
+        "client_secret": AZURE_CLIENT_SECRET,
+        "scope": "https://graph.microsoft.com/.default"
+    }
+    resp = requests.post(url, data=data, timeout=10)
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def obter_chat_id(token):
+    """
+    Retorna o TEAMS_CHAT_ID do .env se já configurado.
+    Caso contrário, busca automaticamente o chat oneOnOne do usuário-alvo
+    e exibe o ID no console para ser salvo no .env.
+    """
+    if TEAMS_CHAT_ID:
+        return TEAMS_CHAT_ID
+
+    print(f"      TEAMS_CHAT_ID não configurado — buscando automaticamente para {TEAMS_USER_EMAIL}...")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Obtém o ID do usuário a partir do email
+    resp = requests.get(
+        f"https://graph.microsoft.com/v1.0/users/{TEAMS_USER_EMAIL}",
+        headers=headers,
+        timeout=10
+    )
+    resp.raise_for_status()
+    user_id = resp.json()["id"]
+
+    # Lista os chats oneOnOne do usuário (requer Chat.ReadWrite.All)
+    resp = requests.get(
+        f"https://graph.microsoft.com/v1.0/users/{user_id}/chats"
+        "?$filter=chatType eq 'oneOnOne'&$expand=members",
+        headers=headers,
+        timeout=10
+    )
+    resp.raise_for_status()
+    chats = resp.json().get("value", [])
+
+    if not chats:
+        raise ValueError(
+            "Nenhum chat oneOnOne encontrado para o usuário. "
+            "Verifique as permissões da App (Chat.ReadWrite.All) ou configure TEAMS_CHAT_ID no .env manualmente."
+        )
+
+    chat_id = chats[0]["id"]
+    print(f"      Chat encontrado: {chat_id}")
+    print(f"      >> Adicione ao .env: TEAMS_CHAT_ID={chat_id}")
+    return chat_id
+
+
+def enviar_via_graph(card_content, chat_id, token):
+    """Envia um Adaptive Card para o chat via Microsoft Graph API."""
+    url = f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "body": {
+            "contentType": "html",
+            "content": '<attachment id="1"></attachment>'
+        },
+        "attachments": [
+            {
+                "id": "1",
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": json.dumps(card_content, ensure_ascii=False)
+            }
+        ]
+    }
+    resp = requests.post(url, json=payload, headers=headers, timeout=10)
+    print(f"      Status: {resp.status_code}")
+    if resp.status_code not in (200, 201):
+        print(f"      Resposta: {resp.text[:500]}")
+    resp.raise_for_status()
 
 
 def _linha_tabela(grupo, instalacao, vencimento, valor, cabecalho=False):
@@ -141,7 +235,7 @@ def montar_lotes(df):
                 {"type": "TextBlock", "text": "Nenhuma fatura encontrada.", "isSubtle": True}
             ]
         }
-        return [{"message": json.dumps(card_content, ensure_ascii=False)}]
+        return [card_content]
 
     total_geral = float(df["VALOR_TOTAL"].sum())
     total_fmt = f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -184,7 +278,7 @@ def montar_lotes(df):
                 *linhas
             ]
         }
-        payloads.append({"message": json.dumps(card_content, ensure_ascii=False)})
+        payloads.append(card_content)
 
     return payloads
 
@@ -219,7 +313,7 @@ def montar_lotes_sem_emissao(df):
                 {"type": "TextBlock", "text": "Nenhuma unidade encontrada.", "isSubtle": True}
             ]
         }
-        return [{"message": json.dumps(card_content, ensure_ascii=False)}]
+        return [card_content]
 
     total_lotes = (total_unidades + LOTE_TAMANHO - 1) // LOTE_TAMANHO
 
@@ -267,68 +361,50 @@ def montar_lotes_sem_emissao(df):
                 *linhas
             ]
         }
-        payloads.append({"message": json.dumps(card_content, ensure_ascii=False)})
+        payloads.append(card_content)
 
     return payloads
-
-
-def enviar_via_webhook(card):
-    resp = requests.post(
-        TEAMS_WEBHOOK_URL,
-        data=json.dumps(card, ensure_ascii=False),
-        headers={"Content-Type": "application/json"},
-        timeout=10,
-    )
-    print(f"      Status: {resp.status_code}")
-    print(f"      Resposta: {resp.text[:500]}")
-    resp.raise_for_status()
 
 
 # ==========================================================
 # EXECUÇÃO
 # ==========================================================
+def _enviar_lotes(lotes, chat_id, token, descricao):
+    print(f"\n   Enviando {descricao} ({len(lotes)} lote(s))...")
+    for i, card in enumerate(lotes, 1):
+        print(f"      Lote {i}/{len(lotes)}...")
+        enviar_via_graph(card, chat_id, token)
+        if i < len(lotes):
+            time.sleep(1)
+    print(f"      {descricao} enviado(s) com sucesso!")
+
+
 def executar_fluxo():
     print("=" * 50)
-    print("Iniciando fluxo — Vencimentos do dia seguinte")
+    print("Iniciando fluxo")
     print("=" * 50)
 
-    print("\n[1/3] Buscando vencimentos de amanhã no banco...")
+    print("\n[1/5] Autenticando no Azure...")
+    token = obter_token()
+    chat_id = obter_chat_id(token)
+    print(f"      Autenticado. Chat ID: {chat_id[:30]}...")
+
+    print("\n[2/5] Buscando vencimentos de amanha no banco...")
     df_vencimentos = buscar_vencimentos_amanha()
     print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
-    print("\n[2/3] Montando lotes...")
-    lotes = montar_lotes(df_vencimentos)
-    print(f"      {len(lotes)} lote(s) de ate {LOTE_TAMANHO} faturas cada.")
-
-    print("\n[3/3] Enviando para o Teams via Webhook...")
-    for i, lote in enumerate(lotes, 1):
-        print(f"      Enviando lote {i}/{len(lotes)}...")
-        enviar_via_webhook(lote)
-    print("      Todos os lotes enviados com sucesso!")
-
-    print("\n" + "=" * 50)
-    print("Fluxo concluído.")
-    print("=" * 50)
-
-
-def executar_fluxo_sem_emissao():
-    print("=" * 50)
-    print("Iniciando fluxo — Unidades sem emissao (> 35 dias)")
-    print("=" * 50)
-
-    print("\n[1/3] Buscando unidades sem emissao no banco...")
+    print("\n[3/5] Buscando unidades sem emissao no banco...")
     df_sem_emissao = buscar_unidades_sem_emissao()
     print(f"      {len(df_sem_emissao)} unidade(s) encontrada(s).")
 
-    print("\n[2/3] Montando lotes...")
-    lotes = montar_lotes_sem_emissao(df_sem_emissao)
-    print(f"      {len(lotes)} lote(s) de ate {LOTE_TAMANHO} unidades cada.")
+    print("\n[4/5] Montando lotes...")
+    lotes_vencimentos = montar_lotes(df_vencimentos)
+    lotes_sem_emissao = montar_lotes_sem_emissao(df_sem_emissao)
+    print(f"      Vencimentos: {len(lotes_vencimentos)} lote(s) | Sem emissao: {len(lotes_sem_emissao)} lote(s).")
 
-    print("\n[3/3] Enviando para o Teams via Webhook...")
-    for i, lote in enumerate(lotes, 1):
-        print(f"      Enviando lote {i}/{len(lotes)}...")
-        enviar_via_webhook(lote)
-    print("      Todos os lotes enviados com sucesso!")
+    print("\n[5/5] Enviando para o Teams via Graph API...")
+    _enviar_lotes(lotes_vencimentos, chat_id, token, "Vencimentos de amanha")
+    _enviar_lotes(lotes_sem_emissao, chat_id, token, "Unidades sem emissao")
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
@@ -337,4 +413,3 @@ def executar_fluxo_sem_emissao():
 
 if __name__ == "__main__":
     executar_fluxo()
-    # executar_fluxo_sem_emissao()
