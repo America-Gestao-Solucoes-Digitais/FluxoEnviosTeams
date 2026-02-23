@@ -82,6 +82,9 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
+LOTE_TAMANHO = 20
+
+
 def _linha_tabela(grupo, instalacao, vencimento, valor, cabecalho=False):
     peso = "Bolder" if cabecalho else "Default"
     return {
@@ -95,59 +98,73 @@ def _linha_tabela(grupo, instalacao, vencimento, valor, cabecalho=False):
     }
 
 
-def montar_mensagem_teams(df):
+def montar_lotes(df):
     amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+    total_faturas = len(df)
+    payloads = []
 
     if df.empty:
-        corpo = [{"type": "TextBlock", "text": "Nenhuma fatura encontrada para amanhã.", "isSubtle": True}]
-        total_fmt = "R$ 0,00"
-    else:
-        total = float(df["VALOR_TOTAL"].sum())
-        total_fmt = f"R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        card_content = {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": [
+                {"type": "TextBlock", "text": f"Vencimentos para amanha - {amanha}", "weight": "Bolder", "size": "Large", "color": "Accent"},
+                {"type": "TextBlock", "text": "Nenhuma fatura encontrada.", "isSubtle": True}
+            ]
+        }
+        return [{"message": json.dumps(card_content, ensure_ascii=False)}]
 
-        corpo = [_linha_tabela("Grupo", "Instalação", "Vencimento", "Valor (R$)", cabecalho=True)]
-        corpo.append({"type": "separator"})
+    total_geral = float(df["VALOR_TOTAL"].sum())
+    total_fmt = f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    total_lotes = (total_faturas + LOTE_TAMANHO - 1) // LOTE_TAMANHO
 
-        for _, row in df.iterrows():
+    for i, inicio in enumerate(range(0, total_faturas, LOTE_TAMANHO)):
+        lote = df.iloc[inicio:inicio + LOTE_TAMANHO]
+        num_lote = i + 1
+
+        if num_lote == 1:
+            titulo = f"Vencimentos para amanha - {amanha}"
+            subtitulo = f"{total_faturas} fatura(s) | Total: {total_fmt} | Parte {num_lote}/{total_lotes}"
+        else:
+            titulo = f"Vencimentos para amanha - {amanha} (continuacao {num_lote}/{total_lotes})"
+            subtitulo = f"Faturas {inicio + 1} a {min(inicio + LOTE_TAMANHO, total_faturas)}"
+
+        linhas = [_linha_tabela("Grupo", "Instalacao", "Vencimento", "Valor (R$)", cabecalho=True)]
+        primeira = True
+        for _, row in lote.iterrows():
             valor = float(row.get("VALOR_TOTAL", 0))
             valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            corpo.append(_linha_tabela(
-                row.get("GRUPO", "—"),
-                row.get("COD_INSTALACAO", "—"),
+            linha = _linha_tabela(
+                row.get("GRUPO", "-"),
+                row.get("COD_INSTALACAO", "-"),
                 amanha,
                 valor_fmt
-            ))
+            )
+            if primeira:
+                linha["separator"] = True
+                primeira = False
+            linhas.append(linha)
 
-    card_content = {
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "type": "AdaptiveCard",
-        "version": "1.4",
-        "body": [
-            {
-                "type": "TextBlock",
-                "text": f"Vencimentos para amanha - {amanha}",
-                "weight": "Bolder",
-                "size": "Large",
-                "color": "Accent"
-            },
-            {
-                "type": "TextBlock",
-                "text": f"{len(df)} fatura(s) | Total: {total_fmt}",
-                "isSubtle": True,
-                "spacing": "None"
-            },
-            {"type": "separator"},
-            *corpo
-        ]
-    }
+        card_content = {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": [
+                {"type": "TextBlock", "text": titulo, "weight": "Bolder", "size": "Large", "color": "Accent"},
+                {"type": "TextBlock", "text": subtitulo, "isSubtle": True, "spacing": "None"},
+                *linhas
+            ]
+        }
+        payloads.append({"message": json.dumps(card_content, ensure_ascii=False)})
 
-    return {"message": json.dumps(card_content, ensure_ascii=False)}
+    return payloads
 
 
 def enviar_via_webhook(card):
     resp = requests.post(
         TEAMS_WEBHOOK_URL,
-        json=card,
+        data=json.dumps(card, ensure_ascii=False),
         headers={"Content-Type": "application/json"},
         timeout=10,
     )
@@ -168,12 +185,15 @@ def executar_fluxo():
     df_vencimentos = buscar_vencimentos_amanha()
     print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
-    print("\n[2/3] Montando mensagem...")
-    mensagem = montar_mensagem_teams(df_vencimentos)
+    print("\n[2/3] Montando lotes...")
+    lotes = montar_lotes(df_vencimentos)
+    print(f"      {len(lotes)} lote(s) de ate {LOTE_TAMANHO} faturas cada.")
 
     print("\n[3/3] Enviando para o Teams via Webhook...")
-    enviar_via_webhook(mensagem)
-    print("      Mensagem enviada com sucesso!")
+    for i, lote in enumerate(lotes, 1):
+        print(f"      Enviando lote {i}/{len(lotes)}...")
+        enviar_via_webhook(lote)
+    print("      Todos os lotes enviados com sucesso!")
 
     print("\n" + "=" * 50)
     print("Fluxo concluído.")
