@@ -46,6 +46,34 @@ def buscar_faturas_lidas_gestao_faturas():
     return df
 
 
+def buscar_unidades_sem_emissao():
+    """
+    Busca todas as unidades ativas de ENERGIA e calcula quantos dias
+    se passaram desde a última DATA_EMISSAO em tb_dfat_gestao_faturas_energia_novo.
+    Retorna apenas unidades com mais de 35 dias sem emissão (ou sem nenhuma emissão).
+    """
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = """
+        SELECT
+            c.INSTALACAO_MATRICULA,
+            c.GRUPO,
+            c.NOME_UNIDADE,
+            MAX(f.DATA_EMISSAO)                          AS ULTIMA_EMISSAO,
+            DATEDIFF(CURDATE(), MAX(f.DATA_EMISSAO))     AS DIAS_SEM_EMISSAO
+        FROM tb_clientes_gestao_faturas AS c
+        LEFT JOIN tb_dfat_gestao_faturas_energia_novo AS f
+            ON c.INSTALACAO_MATRICULA = f.COD_INSTALACAO
+        WHERE c.UTILIDADE = 'ENERGIA'
+          AND c.STATUS_UNIDADE = 'Ativa'
+        GROUP BY c.INSTALACAO_MATRICULA, c.GRUPO, c.NOME_UNIDADE
+        HAVING DIAS_SEM_EMISSAO > 35 OR ULTIMA_EMISSAO IS NULL
+        ORDER BY DIAS_SEM_EMISSAO DESC
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+
 def buscar_vencimentos_amanha():
     """
     Busca as faturas com vencimento amanhã, fazendo JOIN entre:
@@ -161,6 +189,89 @@ def montar_lotes(df):
     return payloads
 
 
+def _linha_emissao(grupo, unidade, instalacao, ultima_emissao, dias, cabecalho=False):
+    peso = "Bolder" if cabecalho else "Default"
+    cor_dias = "Attention" if not cabecalho and isinstance(dias, (int, float)) and dias > 60 else "Default"
+    return {
+        "type": "ColumnSet",
+        "columns": [
+            {"type": "Column", "width": 3, "items": [{"type": "TextBlock", "text": str(grupo), "weight": peso, "wrap": True}]},
+            {"type": "Column", "width": 4, "items": [{"type": "TextBlock", "text": str(unidade), "weight": peso, "wrap": True}]},
+            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(instalacao), "weight": peso, "horizontalAlignment": "Center"}]},
+            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(ultima_emissao), "weight": peso, "horizontalAlignment": "Center"}]},
+            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(dias), "weight": peso, "color": cor_dias, "horizontalAlignment": "Right"}]},
+        ]
+    }
+
+
+def montar_lotes_sem_emissao(df):
+    hoje = datetime.now().strftime("%d/%m/%Y")
+    total_unidades = len(df)
+    payloads = []
+
+    if df.empty:
+        card_content = {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": [
+                {"type": "TextBlock", "text": f"Unidades sem emissao (> 35 dias) — {hoje}", "weight": "Bolder", "size": "Large", "color": "Accent"},
+                {"type": "TextBlock", "text": "Nenhuma unidade encontrada.", "isSubtle": True}
+            ]
+        }
+        return [{"message": json.dumps(card_content, ensure_ascii=False)}]
+
+    total_lotes = (total_unidades + LOTE_TAMANHO - 1) // LOTE_TAMANHO
+
+    for i, inicio in enumerate(range(0, total_unidades, LOTE_TAMANHO)):
+        lote = df.iloc[inicio:inicio + LOTE_TAMANHO]
+        num_lote = i + 1
+
+        if num_lote == 1:
+            titulo = f"Unidades sem emissao (> 35 dias) — {hoje}"
+            subtitulo = f"{total_unidades} unidade(s) | Parte {num_lote}/{total_lotes}"
+        else:
+            titulo = f"Unidades sem emissao (> 35 dias) — {hoje} (continuacao {num_lote}/{total_lotes})"
+            subtitulo = f"Unidades {inicio + 1} a {min(inicio + LOTE_TAMANHO, total_unidades)}"
+
+        linhas = [_linha_emissao("Grupo", "Unidade", "Instalacao", "Ult. Emissao", "Dias", cabecalho=True)]
+        primeira = True
+        for _, row in lote.iterrows():
+            ultima = row.get("ULTIMA_EMISSAO")
+            if pd.isnull(ultima) or ultima is None:
+                ultima_fmt = "Sem emissao"
+                dias_fmt = "N/A"
+            else:
+                ultima_fmt = pd.to_datetime(ultima).strftime("%d/%m/%Y")
+                dias_fmt = int(row.get("DIAS_SEM_EMISSAO", 0))
+
+            linha = _linha_emissao(
+                row.get("GRUPO", "-"),
+                row.get("NOME_UNIDADE", "-"),
+                row.get("INSTALACAO_MATRICULA", "-"),
+                ultima_fmt,
+                dias_fmt
+            )
+            if primeira:
+                linha["separator"] = True
+                primeira = False
+            linhas.append(linha)
+
+        card_content = {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": [
+                {"type": "TextBlock", "text": titulo, "weight": "Bolder", "size": "Large", "color": "Warning"},
+                {"type": "TextBlock", "text": subtitulo, "isSubtle": True, "spacing": "None"},
+                *linhas
+            ]
+        }
+        payloads.append({"message": json.dumps(card_content, ensure_ascii=False)})
+
+    return payloads
+
+
 def enviar_via_webhook(card):
     resp = requests.post(
         TEAMS_WEBHOOK_URL,
@@ -200,5 +311,30 @@ def executar_fluxo():
     print("=" * 50)
 
 
+def executar_fluxo_sem_emissao():
+    print("=" * 50)
+    print("Iniciando fluxo — Unidades sem emissao (> 35 dias)")
+    print("=" * 50)
+
+    print("\n[1/3] Buscando unidades sem emissao no banco...")
+    df_sem_emissao = buscar_unidades_sem_emissao()
+    print(f"      {len(df_sem_emissao)} unidade(s) encontrada(s).")
+
+    print("\n[2/3] Montando lotes...")
+    lotes = montar_lotes_sem_emissao(df_sem_emissao)
+    print(f"      {len(lotes)} lote(s) de ate {LOTE_TAMANHO} unidades cada.")
+
+    print("\n[3/3] Enviando para o Teams via Webhook...")
+    for i, lote in enumerate(lotes, 1):
+        print(f"      Enviando lote {i}/{len(lotes)}...")
+        enviar_via_webhook(lote)
+    print("      Todos os lotes enviados com sucesso!")
+
+    print("\n" + "=" * 50)
+    print("Fluxo concluido.")
+    print("=" * 50)
+
+
 if __name__ == "__main__":
     executar_fluxo()
+    # executar_fluxo_sem_emissao()
