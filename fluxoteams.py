@@ -71,14 +71,8 @@ def buscar_unidades_sem_emissao():
     """
     df = pd.read_sql(query, conn)
 
-    # Filtrando apenas os clientes MAGAZINE LUIZA, DASA, PERNAMBUCANAS, ABIJCSUD, RENNER, GRUPO MIME, PEPSICO, SANTANDER, MARISA e KORA
-    df = df[df["GRUPO"].str.contains("MAGAZINE LUIZA|DASA|PERNAMBUCANAS|ABIJCSUD|RENNER|GRUPO MIME|PEPSICO|SANTANDER|MARISA|KORA", case=False, na=False)].reset_index(drop=True)
-
-    # Deixando a coluna Dias sem emissao como inteiro (em vez de float)
-    df["DIAS_SEM_EMISSAO"] = df["DIAS_SEM_EMISSAO"].fillna(0).astype(int)
-
-    # Desconsiderando as datas de emissão vazias
-    df = df[~df["ULTIMA_EMISSAO"].isna()].reset_index(drop=True)
+    # Filtrando apenas o cliente DASA
+    df = df[df["GRUPO"].str.contains("DASA", case=False, na=False)].reset_index(drop=True)
 
     conn.close()
     return df
@@ -108,6 +102,9 @@ def buscar_vencimentos_amanha():
         ORDER BY c.NOME_UNIDADE
     """
     df = pd.read_sql(query, conn)
+    
+    # Filtrando apenas o cliente DASA
+    df = df[df["GRUPO"].str.contains("DASA", case=False, na=False)].reset_index(drop=True)
     conn.close()
     return df
 
