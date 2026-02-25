@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import pandas as pd
 import mysql.connector
@@ -19,11 +18,7 @@ DB_CONFIG = {
     "database": os.getenv("DB_NAME")
 }
 
-AZURE_TENANT_ID     = os.getenv("AZURE_TENANT_ID")
-AZURE_CLIENT_ID     = os.getenv("AZURE_CLIENT_ID")
-AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
-TEAMS_USER_EMAIL    = os.getenv("TEAMS_USER_EMAIL", "guilherme.garcia@voraenergia.com.br")
-TEAMS_CHAT_ID       = os.getenv("TEAMS_CHAT_ID")
+URL_WEBHOOK = os.getenv("URL_WEBHOOK")
 
 
 # ==========================================================
@@ -118,91 +113,30 @@ def buscar_vencimentos_amanha():
 
 
 # ==========================================================
-# MICROSOFT TEAMS — GRAPH API
+# MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
 LOTE_TAMANHO = 20
 
 
-def obter_token():
-    """Obtém token de acesso via client credentials (Application permissions)."""
-    url = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/oauth2/v2.0/token"
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": AZURE_CLIENT_ID,
-        "client_secret": AZURE_CLIENT_SECRET,
-        "scope": "https://graph.microsoft.com/.default"
-    }
-    resp = requests.post(url, data=data, timeout=10)
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-def obter_chat_id(token):
-    """
-    Retorna o TEAMS_CHAT_ID do .env se já configurado.
-    Caso contrário, busca automaticamente o chat oneOnOne do usuário-alvo
-    e exibe o ID no console para ser salvo no .env.
-    """
-    if TEAMS_CHAT_ID:
-        return TEAMS_CHAT_ID
-
-    print(f"      TEAMS_CHAT_ID não configurado — buscando automaticamente para {TEAMS_USER_EMAIL}...")
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Obtém o ID do usuário a partir do email
-    resp = requests.get(
-        f"https://graph.microsoft.com/v1.0/users/{TEAMS_USER_EMAIL}",
-        headers=headers,
-        timeout=10
-    )
-    resp.raise_for_status()
-    user_id = resp.json()["id"]
-
-    # Lista os chats oneOnOne do usuário (requer Chat.ReadWrite.All)
-    resp = requests.get(
-        f"https://graph.microsoft.com/v1.0/users/{user_id}/chats"
-        "?$filter=chatType eq 'oneOnOne'&$expand=members",
-        headers=headers,
-        timeout=10
-    )
-    resp.raise_for_status()
-    chats = resp.json().get("value", [])
-
-    if not chats:
-        raise ValueError(
-            "Nenhum chat oneOnOne encontrado para o usuário. "
-            "Verifique as permissões da App (Chat.ReadWrite.All) ou configure TEAMS_CHAT_ID no .env manualmente."
-        )
-
-    chat_id = chats[0]["id"]
-    print(f"      Chat encontrado: {chat_id}")
-    print(f"      >> Adicione ao .env: TEAMS_CHAT_ID={chat_id}")
-    return chat_id
-
-
-def enviar_via_graph(card_content, chat_id, token):
-    """Envia um Adaptive Card para o chat via Microsoft Graph API."""
-    url = f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+def enviar_via_webhook(card_content):
+    """Envia um Adaptive Card para o Teams via webhook (Power Automate)."""
     payload = {
-        "body": {
-            "contentType": "html",
-            "content": '<attachment id="1"></attachment>'
-        },
+        "type": "message",
         "attachments": [
             {
-                "id": "1",
                 "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": json.dumps(card_content, ensure_ascii=False)
+                "content": card_content
             }
         ]
     }
-    resp = requests.post(url, json=payload, headers=headers, timeout=10)
+    resp = requests.post(
+        URL_WEBHOOK,
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=10
+    )
     print(f"      Status: {resp.status_code}")
-    if resp.status_code not in (200, 201):
+    if resp.status_code not in (200, 201, 202):
         print(f"      Resposta: {resp.text[:500]}")
     resp.raise_for_status()
 
@@ -369,11 +303,11 @@ def montar_lotes_sem_emissao(df):
 # ==========================================================
 # EXECUÇÃO
 # ==========================================================
-def _enviar_lotes(lotes, chat_id, token, descricao):
+def _enviar_lotes(lotes, descricao):
     print(f"\n   Enviando {descricao} ({len(lotes)} lote(s))...")
     for i, card in enumerate(lotes, 1):
         print(f"      Lote {i}/{len(lotes)}...")
-        enviar_via_graph(card, chat_id, token)
+        enviar_via_webhook(card)
         if i < len(lotes):
             time.sleep(1)
     print(f"      {descricao} enviado(s) com sucesso!")
@@ -384,27 +318,22 @@ def executar_fluxo():
     print("Iniciando fluxo")
     print("=" * 50)
 
-    print("\n[1/5] Autenticando no Azure...")
-    token = obter_token()
-    chat_id = obter_chat_id(token)
-    print(f"      Autenticado. Chat ID: {chat_id[:30]}...")
-
-    print("\n[2/5] Buscando vencimentos de amanha no banco...")
+    print("\n[1/4] Buscando vencimentos de amanha no banco...")
     df_vencimentos = buscar_vencimentos_amanha()
     print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
-    print("\n[3/5] Buscando unidades sem emissao no banco...")
+    print("\n[2/4] Buscando unidades sem emissao no banco...")
     df_sem_emissao = buscar_unidades_sem_emissao()
     print(f"      {len(df_sem_emissao)} unidade(s) encontrada(s).")
 
-    print("\n[4/5] Montando lotes...")
+    print("\n[3/4] Montando lotes...")
     lotes_vencimentos = montar_lotes(df_vencimentos)
     lotes_sem_emissao = montar_lotes_sem_emissao(df_sem_emissao)
     print(f"      Vencimentos: {len(lotes_vencimentos)} lote(s) | Sem emissao: {len(lotes_sem_emissao)} lote(s).")
 
-    print("\n[5/5] Enviando para o Teams via Graph API...")
-    _enviar_lotes(lotes_vencimentos, chat_id, token, "Vencimentos de amanha")
-    _enviar_lotes(lotes_sem_emissao, chat_id, token, "Unidades sem emissao")
+    print("\n[4/4] Enviando para o Teams via Webhook...")
+    _enviar_lotes(lotes_vencimentos, "Vencimentos de amanha")
+    _enviar_lotes(lotes_sem_emissao, "Unidades sem emissao")
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
