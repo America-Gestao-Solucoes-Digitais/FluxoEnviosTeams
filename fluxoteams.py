@@ -1,6 +1,4 @@
 import os
-import json
-import time
 import pandas as pd
 import mysql.connector
 import requests
@@ -103,7 +101,7 @@ def buscar_vencimentos_amanha():
         ORDER BY c.NOME_UNIDADE
     """
     df = pd.read_sql(query, conn)
-    
+
     # Filtrando apenas o cliente DASA
     df = df[df["GRUPO"].str.contains("DASA", case=False, na=False)].reset_index(drop=True)
     conn.close()
@@ -113,216 +111,75 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
-LOTE_TAMANHO = 20
-
-
-def enviar_via_webhook(card_content):
-    """Envia um Adaptive Card para o Teams via webhook (Power Automate)."""
+def enviar_via_webhook(mensagem_html):
+    """Envia mensagem HTML para o Teams via webhook (Power Automate)."""
     resp = requests.post(
         URL_WEBHOOK,
-        json=card_content,
+        json={"message": mensagem_html},
         headers={"Content-Type": "application/json"},
         timeout=10
     )
-    print(f"      Status: {resp.status_code}")
+    print(f"   Status: {resp.status_code}")
     if resp.status_code not in (200, 201, 202):
-        print(f"      Resposta: {resp.text[:500]}")
+        print(f"   Resposta: {resp.text[:500]}")
     resp.raise_for_status()
 
 
-def _linha_tabela(grupo, instalacao, vencimento, valor, cabecalho=False):
-    peso = "Bolder" if cabecalho else "Default"
-    return {
-        "type": "ColumnSet",
-        "columns": [
-            {"type": "Column", "width": 4, "items": [{"type": "TextBlock", "text": str(grupo), "weight": peso, "wrap": True}]},
-            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(instalacao), "weight": peso, "horizontalAlignment": "Center"}]},
-            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(vencimento), "weight": peso, "horizontalAlignment": "Center"}]},
-            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(valor), "weight": peso, "horizontalAlignment": "Right"}]},
-        ]
-    }
-
-
-def montar_lotes(df):
+def montar_mensagem_html(df):
+    """Monta tabela HTML com os vencimentos do dia seguinte."""
     amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
-    total_faturas = len(df)
-    payloads = []
 
     if df.empty:
-        card_content = {
-            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-            "type": "AdaptiveCard",
-            "version": "1.4",
-            "body": [
-                {"type": "TextBlock", "text": f"Vencimentos para amanha - {amanha}", "weight": "Bolder", "size": "Large", "color": "Accent"},
-                {"type": "TextBlock", "text": "Nenhuma fatura encontrada.", "isSubtle": True}
-            ]
-        }
-        return [card_content]
+        return (
+            f"<b>Vencimentos para amanha - {amanha}</b><br>"
+            "Nenhuma fatura encontrada."
+        )
 
     total_geral = float(df["VALOR_TOTAL"].sum())
     total_fmt = f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    total_lotes = (total_faturas + LOTE_TAMANHO - 1) // LOTE_TAMANHO
+    total_faturas = len(df)
 
-    for i, inicio in enumerate(range(0, total_faturas, LOTE_TAMANHO)):
-        lote = df.iloc[inicio:inicio + LOTE_TAMANHO]
-        num_lote = i + 1
+    linhas = ""
+    for _, row in df.iterrows():
+        valor = float(row.get("VALOR_TOTAL", 0))
+        valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('GRUPO', '-')}</td>"
+            f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{amanha}</td>"
+            f"<td>{valor_fmt}</td>"
+            f"</tr>"
+        )
 
-        if num_lote == 1:
-            titulo = f"Vencimentos para amanha - {amanha}"
-            subtitulo = f"{total_faturas} fatura(s) | Total: {total_fmt} | Parte {num_lote}/{total_lotes}"
-        else:
-            titulo = f"Vencimentos para amanha - {amanha} (continuacao {num_lote}/{total_lotes})"
-            subtitulo = f"Faturas {inicio + 1} a {min(inicio + LOTE_TAMANHO, total_faturas)}"
-
-        linhas = [_linha_tabela("Grupo", "Instalacao", "Vencimento", "Valor (R$)", cabecalho=True)]
-        primeira = True
-        for _, row in lote.iterrows():
-            valor = float(row.get("VALOR_TOTAL", 0))
-            valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linha = _linha_tabela(
-                row.get("GRUPO", "-"),
-                row.get("COD_INSTALACAO", "-"),
-                amanha,
-                valor_fmt
-            )
-            if primeira:
-                linha["separator"] = True
-                primeira = False
-            linhas.append(linha)
-
-        card_content = {
-            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-            "type": "AdaptiveCard",
-            "version": "1.4",
-            "body": [
-                {"type": "TextBlock", "text": titulo, "weight": "Bolder", "size": "Large", "color": "Accent"},
-                {"type": "TextBlock", "text": subtitulo, "isSubtle": True, "spacing": "None"},
-                *linhas
-            ]
-        }
-        payloads.append(card_content)
-
-    return payloads
-
-
-def _linha_emissao(grupo, unidade, instalacao, ultima_emissao, dias, cabecalho=False):
-    peso = "Bolder" if cabecalho else "Default"
-    cor_dias = "Attention" if not cabecalho and isinstance(dias, (int, float)) and dias > 60 else "Default"
-    return {
-        "type": "ColumnSet",
-        "columns": [
-            {"type": "Column", "width": 3, "items": [{"type": "TextBlock", "text": str(grupo), "weight": peso, "wrap": True}]},
-            {"type": "Column", "width": 4, "items": [{"type": "TextBlock", "text": str(unidade), "weight": peso, "wrap": True}]},
-            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(instalacao), "weight": peso, "horizontalAlignment": "Center"}]},
-            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(ultima_emissao), "weight": peso, "horizontalAlignment": "Center"}]},
-            {"type": "Column", "width": 2, "items": [{"type": "TextBlock", "text": str(dias), "weight": peso, "color": cor_dias, "horizontalAlignment": "Right"}]},
-        ]
-    }
-
-
-def montar_lotes_sem_emissao(df):
-    hoje = datetime.now().strftime("%d/%m/%Y")
-    total_unidades = len(df)
-    payloads = []
-
-    if df.empty:
-        card_content = {
-            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-            "type": "AdaptiveCard",
-            "version": "1.4",
-            "body": [
-                {"type": "TextBlock", "text": f"Unidades sem emissao (> 35 dias) — {hoje}", "weight": "Bolder", "size": "Large", "color": "Accent"},
-                {"type": "TextBlock", "text": "Nenhuma unidade encontrada.", "isSubtle": True}
-            ]
-        }
-        return [card_content]
-
-    total_lotes = (total_unidades + LOTE_TAMANHO - 1) // LOTE_TAMANHO
-
-    for i, inicio in enumerate(range(0, total_unidades, LOTE_TAMANHO)):
-        lote = df.iloc[inicio:inicio + LOTE_TAMANHO]
-        num_lote = i + 1
-
-        if num_lote == 1:
-            titulo = f"Unidades sem emissao (> 35 dias) — {hoje}"
-            subtitulo = f"{total_unidades} unidade(s) | Parte {num_lote}/{total_lotes}"
-        else:
-            titulo = f"Unidades sem emissao (> 35 dias) — {hoje} (continuacao {num_lote}/{total_lotes})"
-            subtitulo = f"Unidades {inicio + 1} a {min(inicio + LOTE_TAMANHO, total_unidades)}"
-
-        linhas = [_linha_emissao("Grupo", "Unidade", "Instalacao", "Ult. Emissao", "Dias", cabecalho=True)]
-        primeira = True
-        for _, row in lote.iterrows():
-            ultima = row.get("ULTIMA_EMISSAO")
-            if pd.isnull(ultima) or ultima is None:
-                ultima_fmt = "Sem emissao"
-                dias_fmt = "N/A"
-            else:
-                ultima_fmt = pd.to_datetime(ultima).strftime("%d/%m/%Y")
-                dias_fmt = int(row.get("DIAS_SEM_EMISSAO", 0))
-
-            linha = _linha_emissao(
-                row.get("GRUPO", "-"),
-                row.get("NOME_UNIDADE", "-"),
-                row.get("INSTALACAO_MATRICULA", "-"),
-                ultima_fmt,
-                dias_fmt
-            )
-            if primeira:
-                linha["separator"] = True
-                primeira = False
-            linhas.append(linha)
-
-        card_content = {
-            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-            "type": "AdaptiveCard",
-            "version": "1.4",
-            "body": [
-                {"type": "TextBlock", "text": titulo, "weight": "Bolder", "size": "Large", "color": "Warning"},
-                {"type": "TextBlock", "text": subtitulo, "isSubtle": True, "spacing": "None"},
-                *linhas
-            ]
-        }
-        payloads.append(card_content)
-
-    return payloads
+    return (
+        f"<b>Vencimentos para amanha - {amanha}</b><br>"
+        f"{total_faturas} fatura(s) &nbsp;|&nbsp; Total: {total_fmt}<br><br>"
+        f"<table>"
+        f"<tr><th>Grupo</th><th>Instalacao</th><th>Vencimento</th><th>Valor (R$)</th></tr>"
+        f"{linhas}"
+        f"</table>"
+    )
 
 
 # ==========================================================
 # EXECUÇÃO
 # ==========================================================
-def _enviar_lotes(lotes, descricao):
-    print(f"\n   Enviando {descricao} ({len(lotes)} lote(s))...")
-    for i, card in enumerate(lotes, 1):
-        print(f"      Lote {i}/{len(lotes)}...")
-        enviar_via_webhook(card)
-        if i < len(lotes):
-            time.sleep(1)
-    print(f"      {descricao} enviado(s) com sucesso!")
-
-
 def executar_fluxo():
     print("=" * 50)
     print("Iniciando fluxo")
     print("=" * 50)
 
-    print("\n[1/4] Buscando vencimentos de amanha no banco...")
+    print("\n[1/3] Buscando vencimentos de amanha no banco...")
     df_vencimentos = buscar_vencimentos_amanha()
     print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
-    '''print("\n[2/4] Buscando unidades sem emissao no banco...")
-    df_sem_emissao = buscar_unidades_sem_emissao()
-    print(f"      {len(df_sem_emissao)} unidade(s) encontrada(s).")'''
+    print("\n[2/3] Montando mensagem HTML...")
+    mensagem = montar_mensagem_html(df_vencimentos)
 
-    print("\n[3/4] Montando lotes...")
-    lotes_vencimentos = montar_lotes(df_vencimentos)
-    '''lotes_sem_emissao = montar_lotes_sem_emissao(df_sem_emissao)'''
-    '''print(f"      Vencimentos: {len(lotes_vencimentos)} lote(s) | Sem emissao: {len(lotes_sem_emissao)} lote(s).")'''
-
-    print("\n[4/4] Enviando para o Teams via Webhook...")
-    _enviar_lotes(lotes_vencimentos, "Vencimentos de amanha")
-    '''_enviar_lotes(lotes_sem_emissao, "Unidades sem emissao")'''
+    print("\n[3/3] Enviando para o Teams via Webhook...")
+    enviar_via_webhook(mensagem)
+    print("      Enviado com sucesso!")
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
