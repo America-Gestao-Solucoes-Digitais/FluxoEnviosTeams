@@ -118,18 +118,9 @@ LOTE_TAMANHO = 20
 
 def enviar_via_webhook(card_content):
     """Envia um Adaptive Card para o Teams via webhook (Power Automate)."""
-    payload = {
-        "type": "message",
-        "attachments": [
-            {
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": json.dumps(card_content, ensure_ascii=False)
-            }
-        ]
-    }
     resp = requests.post(
         URL_WEBHOOK,
-        data=json.dumps(payload, ensure_ascii=False),
+        json=card_content,
         headers={"Content-Type": "application/json"},
         timeout=10
     )
