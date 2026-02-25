@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import pandas as pd
 import mysql.connector
@@ -122,13 +123,13 @@ def enviar_via_webhook(card_content):
         "attachments": [
             {
                 "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": card_content
+                "content": json.dumps(card_content, ensure_ascii=False)
             }
         ]
     }
     resp = requests.post(
         URL_WEBHOOK,
-        json=payload,
+        data=json.dumps(payload, ensure_ascii=False),
         headers={"Content-Type": "application/json"},
         timeout=10
     )
@@ -319,18 +320,18 @@ def executar_fluxo():
     df_vencimentos = buscar_vencimentos_amanha()
     print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
-    print("\n[2/4] Buscando unidades sem emissao no banco...")
+    '''print("\n[2/4] Buscando unidades sem emissao no banco...")
     df_sem_emissao = buscar_unidades_sem_emissao()
-    print(f"      {len(df_sem_emissao)} unidade(s) encontrada(s).")
+    print(f"      {len(df_sem_emissao)} unidade(s) encontrada(s).")'''
 
     print("\n[3/4] Montando lotes...")
     lotes_vencimentos = montar_lotes(df_vencimentos)
-    lotes_sem_emissao = montar_lotes_sem_emissao(df_sem_emissao)
-    print(f"      Vencimentos: {len(lotes_vencimentos)} lote(s) | Sem emissao: {len(lotes_sem_emissao)} lote(s).")
+    '''lotes_sem_emissao = montar_lotes_sem_emissao(df_sem_emissao)'''
+    '''print(f"      Vencimentos: {len(lotes_vencimentos)} lote(s) | Sem emissao: {len(lotes_sem_emissao)} lote(s).")'''
 
     print("\n[4/4] Enviando para o Teams via Webhook...")
     _enviar_lotes(lotes_vencimentos, "Vencimentos de amanha")
-    _enviar_lotes(lotes_sem_emissao, "Unidades sem emissao")
+    '''_enviar_lotes(lotes_sem_emissao, "Unidades sem emissao")'''
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
