@@ -20,30 +20,29 @@ DB_CONFIG = {
     "database": os.getenv("DB_NAME")
 }
 
+# Webhook do Power Automate para envio no Teams
 URL_WEBHOOK = os.getenv("URL_WEBHOOK")
 
 # Configurações SMTP (Office 365)
-# Variáveis necessárias no .env:
-#   SMTP_HOST=smtp.office365.com
-#   SMTP_PORT=587
-#   SMTP_USER=email_remetente@voraenergia.com.br
-#   SMTP_PASS=senha_aqui
 SMTP_CONFIG = {
     "host":     os.getenv("SMTP_HOST", "smtp.office365.com"),
     "port":     int(os.getenv("SMTP_PORT", 587)),
     "user":     os.getenv("SMTP_USER"),
     "password": os.getenv("SMTP_PASS"),
 }
+
+# E-mail do remetente (deve ser o mesmo do SMTP_USER) e destinatário de teste
 EMAIL_REMETENTE = os.getenv("SMTP_USER")
 EMAIL_TESTE     = "guilherme.garcia@voraenergia.com.br"  # trocar para GESTORES_POR_GRUPO em produção
 PERC_ALERTA     = 30  # % de aumento para disparar alerta
 
-
+# Grupos a serem excluídos dos alertas (ex: grandes consumidores com gestão própria ou que não queremos monitorar)
 GRUPOS_EXCLUIDOS = (
     "GPA", "OI", "ENEL X GD", "VENANCIO", "CLVB",
     "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS"
 )
 
+# Mapeamento de grupos para e-mails dos gestores responsáveis (para menção no Teams)
 GESTORES_POR_GRUPO = {
     "ABIJCSUD":       ["guilherme.garcia@voraenergia.com.br", "wanderson.santos@voraenergia.com.br"],
     "DASA":           ["bruno.petrillo@voraenergia.com.br", "sabrina.gomes@voraenergia.com.br"],
@@ -56,6 +55,14 @@ GESTORES_POR_GRUPO = {
     "ZARA":           ["gustavo.felix@voraenergia.com.br"],
     "KORA":           ["guilherme.viana@voraenergia.com.br"],
 }
+
+
+
+
+
+
+
+
 
 
 # ==========================================================
@@ -232,6 +239,14 @@ def buscar_variacao_valor():
     return df
 
 
+
+
+
+
+
+
+
+
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
@@ -405,6 +420,9 @@ def montar_mensagem_html_valor(df, grupo):
     )
 
 
+
+
+
 # ==========================================================
 # E-MAIL — SMTP (Office 365)
 # ==========================================================
@@ -421,6 +439,11 @@ def enviar_email(assunto, corpo_html, destinatarios):
         smtp.starttls()
         smtp.login(SMTP_CONFIG["user"], SMTP_CONFIG["password"])
         smtp.sendmail(EMAIL_REMETENTE, destinatarios, msg.as_string())
+
+
+
+
+
 
 
 # ==========================================================
@@ -490,5 +513,7 @@ def executar_fluxo():
     print("=" * 50)
 
 
+
+# Permite executar o fluxo diretamente por linha de comando (python fluxoteams.py)
 if __name__ == "__main__":
     executar_fluxo()
