@@ -98,12 +98,10 @@ def buscar_vencimentos_amanha():
         WHERE DATE(f.DATA_VENCIMENTO) = '{amanha}'
           AND c.UTILIDADE = 'ENERGIA'
           AND c.STATUS_UNIDADE = 'Ativa'
-        ORDER BY c.NOME_UNIDADE
+        ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
     df = pd.read_sql(query, conn)
 
-    # Filtrando apenas o cliente DASA
-    df = df[df["GRUPO"].str.contains("DASA", case=False, na=False)].reset_index(drop=True)
     conn.close()
     return df
 
@@ -111,11 +109,12 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
-def enviar_via_webhook(mensagem_html):
-    """Envia mensagem HTML para o Teams via webhook (Power Automate)."""
+def enviar_via_webhook(mensagem_html, grupo):
+    """Envia mensagem HTML para o Teams via webhook (Power Automate).
+    Passa o campo 'grupo' para o fluxo rotear ao canal correto."""
     resp = requests.post(
         URL_WEBHOOK,
-        json={"message": mensagem_html},
+        json={"grupo": grupo, "message": mensagem_html},
         headers={"Content-Type": "application/json"},
         timeout=10
     )
@@ -170,16 +169,20 @@ def executar_fluxo():
     print("Iniciando fluxo")
     print("=" * 50)
 
-    print("\n[1/3] Buscando vencimentos de amanha no banco...")
+    print("\n[1/2] Buscando vencimentos de amanha no banco...")
     df_vencimentos = buscar_vencimentos_amanha()
-    print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
+    print(f"      {len(df_vencimentos)} fatura(s) encontrada(s) no total.")
 
-    print("\n[2/3] Montando mensagem HTML...")
-    mensagem = montar_mensagem_html(df_vencimentos)
+    grupos = df_vencimentos["GRUPO"].unique()
+    print(f"      {len(grupos)} grupo(s) com vencimento: {list(grupos)}")
 
-    print("\n[3/3] Enviando para o Teams via Webhook...")
-    enviar_via_webhook(mensagem)
-    print("      Enviado com sucesso!")
+    print("\n[2/2] Enviando para o Teams por grupo...")
+    for grupo in grupos:
+        df_grupo = df_vencimentos[df_vencimentos["GRUPO"] == grupo].reset_index(drop=True)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
+        mensagem = montar_mensagem_html(df_grupo)
+        enviar_via_webhook(mensagem, grupo)
+        print("   Enviado com sucesso!")
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
