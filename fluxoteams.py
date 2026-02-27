@@ -19,6 +19,19 @@ DB_CONFIG = {
 
 URL_WEBHOOK = os.getenv("URL_WEBHOOK")
 
+GESTORES_POR_GRUPO = {
+    "ABIJCSUD":       ["guilherme.garcia@voraenergia.com.br", "wanderson.santos@voraenergia.com.br"],
+    "DASA":           ["bruno.petrillo@voraenergia.com.br", "sabrina.gomes@voraenergia.com.br"],
+    "MAGAZINE LUIZA": ["guilherme.garcia@voraenergia.com.br"],
+    "MARISA":         ["gustavo.felix@voraenergia.com.br"],
+    "PERNAMBUCANAS":  ["caio.augusto@voraenergia.com.br"],
+    "RENNER":         ["caio.augusto@voraenergia.com.br"],
+    "PEPSICO":        ["samuel.santos@voraenergia.com.br"],
+    "SANTANDER":      ["samuel.santos@voraenergia.com.br"],
+    "ZARA":           ["gustavo.felix@voraenergia.com.br"],
+    "KORA":           ["guilherme.viana@voraenergia.com.br"],
+}
+
 
 # ==========================================================
 # BANCO DE DADOS
@@ -107,10 +120,11 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 def enviar_via_webhook(mensagem_html, grupo):
     """Envia mensagem HTML para o Teams via webhook (Power Automate).
-    Passa o campo 'grupo' para o fluxo rotear ao canal correto."""
+    Passa 'grupo', 'message' e 'gestores' para o fluxo rotear e mencionar os responsáveis."""
+    gestores = ";".join(GESTORES_POR_GRUPO.get(grupo, []))
     resp = requests.post(
         URL_WEBHOOK,
-        json={"grupo": grupo, "message": mensagem_html},
+        json={"grupo": grupo, "message": mensagem_html, "gestores": gestores},
         headers={"Content-Type": "application/json"},
         timeout=10
     )
