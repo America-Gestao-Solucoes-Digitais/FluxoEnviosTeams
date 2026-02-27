@@ -19,6 +19,8 @@ DB_CONFIG = {
 
 URL_WEBHOOK = os.getenv("URL_WEBHOOK")
 
+CHUNK_SIZE = 30  # Máximo de linhas por mensagem (evita RequestEntityTooLarge)
+
 GRUPOS_EXCLUIDOS = (
     "GPA", "OI", "ENEL X GD", "VENANCIO", "CLVB",
     "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS"
@@ -130,19 +132,13 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
-def email_para_nome(email):
-    """Converte e-mail em nome para exibição. Ex: guilherme.garcia@... -> Guilherme Garcia"""
-    local = email.split("@")[0]
-    return " ".join(p.capitalize() for p in local.split("."))
-
-
 def linha_gestores_html(grupo):
     """Retorna linha HTML com os gestores do grupo para marcar na mensagem."""
     emails = GESTORES_POR_GRUPO.get(grupo, [])
     if not emails:
         return ""
-    nomes = ", ".join(f"<at>{email_para_nome(e)}</at>" for e in emails)
-    return f"<b>Gestores:</b> {nomes}<br><br>"
+    mencoes = ", ".join(f"@{e}" for e in emails)
+    return f"<b>Gestores:</b> {mencoes}<br><br>"
 
 
 def enviar_via_webhook(mensagem_html, grupo):
@@ -161,7 +157,7 @@ def enviar_via_webhook(mensagem_html, grupo):
     resp.raise_for_status()
 
 
-def montar_mensagem_html_emissao(df, grupo):
+def montar_mensagem_html_emissao(df, grupo, parte=1, total=1):
     """Monta tabela HTML com unidades com emissão atrasada (>35 dias)."""
     if df.empty:
         return None
@@ -180,9 +176,10 @@ def montar_mensagem_html_emissao(df, grupo):
             f"</tr>"
         )
 
+    parte_txt = f" (Parte {parte}/{total})" if total > 1 else ""
     return (
         f"{linha_gestores_html(grupo)}"
-        f"<b>Unidades sem emissao (&gt;35 dias)</b><br>"
+        f"<b>Unidades sem emissao (&gt;35 dias){parte_txt}</b><br>"
         f"{len(df)} unidade(s) com atraso<br><br>"
         f"<table>"
         f"<tr><th>Unidade</th><th>Instalacao</th><th>Ultima Emissao</th><th>Dias</th></tr>"
@@ -191,7 +188,7 @@ def montar_mensagem_html_emissao(df, grupo):
     )
 
 
-def montar_mensagem_html(df, grupo):
+def montar_mensagem_html(df, grupo, parte=1, total=1):
     """Monta tabela HTML com os vencimentos do dia seguinte."""
     amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
 
@@ -219,9 +216,10 @@ def montar_mensagem_html(df, grupo):
             f"</tr>"
         )
 
+    parte_txt = f" (Parte {parte}/{total})" if total > 1 else ""
     return (
         f"{linha_gestores_html(grupo)}"
-        f"<b>Vencimentos para amanha - {amanha}</b><br>"
+        f"<b>Vencimentos para amanha - {amanha}{parte_txt}</b><br>"
         f"{total_faturas} fatura(s) &nbsp;|&nbsp; Total: {total_fmt}<br><br>"
         f"<table>"
         f"<tr><th>Grupo</th><th>Instalacao</th><th>Vencimento</th><th>Valor (R$)</th></tr>"
@@ -245,9 +243,12 @@ def executar_fluxo():
     print("\n[2/4] Enviando vencimentos por grupo...")
     for grupo in df_vencimentos["GRUPO"].unique():
         df_grupo = df_vencimentos[df_vencimentos["GRUPO"] == grupo].reset_index(drop=True)
-        print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
-        enviar_via_webhook(montar_mensagem_html(df_grupo, grupo), grupo)
-        print("   Enviado com sucesso!")
+        chunks = [df_grupo.iloc[i:i+CHUNK_SIZE] for i in range(0, len(df_grupo), CHUNK_SIZE)]
+        total = len(chunks)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s), {total} parte(s))")
+        for parte, chunk in enumerate(chunks, 1):
+            enviar_via_webhook(montar_mensagem_html(chunk, grupo, parte, total), grupo)
+            print(f"   Parte {parte}/{total} enviada com sucesso!")
 
     print("\n[3/4] Buscando unidades com emissao atrasada...")
     df_emissao = buscar_unidades_sem_emissao()
@@ -256,11 +257,14 @@ def executar_fluxo():
     print("\n[4/4] Enviando emissoes atrasadas por grupo...")
     for grupo in df_emissao["GRUPO"].unique():
         df_grupo = df_emissao[df_emissao["GRUPO"] == grupo].reset_index(drop=True)
-        mensagem = montar_mensagem_html_emissao(df_grupo, grupo)
-        if mensagem:
-            print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
-            enviar_via_webhook(mensagem, grupo)
-            print("   Enviado com sucesso!")
+        chunks = [df_grupo.iloc[i:i+CHUNK_SIZE] for i in range(0, len(df_grupo), CHUNK_SIZE)]
+        total = len(chunks)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s), {total} parte(s))")
+        for parte, chunk in enumerate(chunks, 1):
+            mensagem = montar_mensagem_html_emissao(chunk, grupo, parte, total)
+            if mensagem:
+                enviar_via_webhook(mensagem, grupo)
+                print(f"   Parte {parte}/{total} enviada com sucesso!")
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
