@@ -38,8 +38,8 @@ PERC_ALERTA     = 30  # % de aumento para disparar alerta
 
 # Grupos a serem excluídos dos alertas (ex: grandes consumidores com gestão própria ou que não queremos monitorar)
 GRUPOS_EXCLUIDOS = (
-    "GPA", "OI", "ENEL X GD", "VENANCIO", "CLVB",
-    "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS"
+    "GPA", "OI", "ENEL X GD", "VENANCIO", "CVLB",
+    "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS","LIVRE ACL","DROGAL","REDE AMERICAS"
 )
 
 # Mapeamento de grupos para e-mails dos gestores responsáveis (para menção no Teams)
@@ -55,14 +55,6 @@ GESTORES_POR_GRUPO = {
     "ZARA":           ["gustavo.felix@voraenergia.com.br"],
     "KORA":           ["guilherme.viana@voraenergia.com.br"],
 }
-
-
-
-
-
-
-
-
 
 
 # ==========================================================
