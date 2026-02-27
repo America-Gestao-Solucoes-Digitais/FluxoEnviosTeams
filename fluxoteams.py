@@ -1,7 +1,10 @@
 import os
+import smtplib
 import pandas as pd
 import mysql.connector
 import requests
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
@@ -18,6 +21,22 @@ DB_CONFIG = {
 }
 
 URL_WEBHOOK = os.getenv("URL_WEBHOOK")
+
+# Configurações SMTP (Office 365)
+# Variáveis necessárias no .env:
+#   SMTP_HOST=smtp.office365.com
+#   SMTP_PORT=587
+#   SMTP_USER=email_remetente@voraenergia.com.br
+#   SMTP_PASS=senha_aqui
+SMTP_CONFIG = {
+    "host":     os.getenv("SMTP_HOST", "smtp.office365.com"),
+    "port":     int(os.getenv("SMTP_PORT", 587)),
+    "user":     os.getenv("SMTP_USER"),
+    "password": os.getenv("SMTP_PASS"),
+}
+EMAIL_REMETENTE = os.getenv("SMTP_USER")
+EMAIL_TESTE     = "guilherme.garcia@voraenergia.com.br"  # trocar para GESTORES_POR_GRUPO em produção
+PERC_ALERTA     = 30  # % de aumento para disparar alerta
 
 
 GRUPOS_EXCLUIDOS = (
@@ -128,6 +147,91 @@ def buscar_vencimentos_amanha():
     return df
 
 
+def buscar_variacao_consumo():
+    """
+    Compara o consumo (FP e P) da referência mais recente com o mesmo mês do ano anterior
+    (REFERENCIA - 100, ex: 202502 → 202402).
+    Retorna unidades com variação de consumo FP ou P acima de PERC_ALERTA %.
+    """
+    excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = f"""
+        SELECT
+            a.COD_INSTALACAO,
+            c.GRUPO,
+            c.NOME_UNIDADE,
+            a.REFERENCIA                                                   AS REF_ATUAL,
+            (a.REFERENCIA - 100)                                           AS REF_ANTERIOR,
+            a.CONSUMO_FP                                                   AS FP_ATUAL,
+            ant.CONSUMO_FP                                                 AS FP_ANT,
+            ROUND(((a.CONSUMO_FP  - ant.CONSUMO_FP)  / NULLIF(ant.CONSUMO_FP,  0)) * 100, 1) AS PERC_FP,
+            a.CONSUMO_P                                                    AS P_ATUAL,
+            ant.CONSUMO_P                                                  AS P_ANT,
+            ROUND(((a.CONSUMO_P   - ant.CONSUMO_P)   / NULLIF(ant.CONSUMO_P,   0)) * 100, 1) AS PERC_P
+        FROM tb_dfat_gestao_faturas_energia_novo AS a
+        INNER JOIN (
+            SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
+            FROM tb_dfat_gestao_faturas_energia_novo
+            GROUP BY COD_INSTALACAO
+        ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
+        INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
+            ON a.COD_INSTALACAO = ant.COD_INSTALACAO
+           AND ant.REFERENCIA = (a.REFERENCIA - 100)
+        INNER JOIN tb_clientes_gestao_faturas AS c
+            ON a.COD_INSTALACAO = c.INSTALACAO_MATRICULA
+        WHERE c.UTILIDADE = 'ENERGIA'
+          AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.GRUPO IS NOT NULL
+          AND c.GRUPO NOT IN ({excluidos})
+        HAVING PERC_FP > {PERC_ALERTA} OR PERC_P > {PERC_ALERTA}
+        ORDER BY c.GRUPO, c.NOME_UNIDADE
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+
+def buscar_variacao_valor():
+    """
+    Compara o VALOR_TOTAL da referência mais recente com o mesmo mês do ano anterior
+    (REFERENCIA - 100).
+    Retorna unidades com variação de valor acima de PERC_ALERTA %.
+    """
+    excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = f"""
+        SELECT
+            a.COD_INSTALACAO,
+            c.GRUPO,
+            c.NOME_UNIDADE,
+            a.REFERENCIA                                                          AS REF_ATUAL,
+            (a.REFERENCIA - 100)                                                  AS REF_ANTERIOR,
+            a.VALOR_TOTAL                                                         AS VALOR_ATUAL,
+            ant.VALOR_TOTAL                                                       AS VALOR_ANT,
+            ROUND(((a.VALOR_TOTAL - ant.VALOR_TOTAL) / NULLIF(ant.VALOR_TOTAL, 0)) * 100, 1) AS PERC_VALOR
+        FROM tb_dfat_gestao_faturas_energia_novo AS a
+        INNER JOIN (
+            SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
+            FROM tb_dfat_gestao_faturas_energia_novo
+            GROUP BY COD_INSTALACAO
+        ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
+        INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
+            ON a.COD_INSTALACAO = ant.COD_INSTALACAO
+           AND ant.REFERENCIA = (a.REFERENCIA - 100)
+        INNER JOIN tb_clientes_gestao_faturas AS c
+            ON a.COD_INSTALACAO = c.INSTALACAO_MATRICULA
+        WHERE c.UTILIDADE = 'ENERGIA'
+          AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.GRUPO IS NOT NULL
+          AND c.GRUPO NOT IN ({excluidos})
+        HAVING PERC_VALOR > {PERC_ALERTA}
+        ORDER BY c.GRUPO, c.NOME_UNIDADE
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
@@ -225,6 +329,100 @@ def montar_mensagem_html(df, grupo):
     )
 
 
+def montar_mensagem_html_consumo(df, grupo):
+    """Monta tabela HTML com unidades com variação de consumo (FP ou P) acima de PERC_ALERTA %."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{row.get('FP_ATUAL', '-')}</td>"
+            f"<td>{row.get('FP_ANT', '-')}</td>"
+            f"<td>{row.get('PERC_FP', '-')}%</td>"
+            f"<td>{row.get('P_ATUAL', '-')}</td>"
+            f"<td>{row.get('P_ANT', '-')}</td>"
+            f"<td>{row.get('PERC_P', '-')}%</td>"
+            f"</tr>"
+        )
+
+    return (
+        f"{linha_gestores_html(grupo)}"
+        f"<b>Alerta de Consumo - Aumento &gt;{PERC_ALERTA}% (vs. A-1)</b><br>"
+        f"{len(df)} unidade(s) com variacao relevante<br><br>"
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>FP Atual</th><th>FP A-1</th><th>% FP</th>"
+        f"<th>P Atual</th><th>P A-1</th><th>% P</th>"
+        f"</tr>"
+        f"{linhas}"
+        f"</table>"
+    )
+
+
+def montar_mensagem_html_valor(df, grupo):
+    """Monta tabela HTML com unidades com variação de valor total acima de PERC_ALERTA %."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        v_atual = float(row.get("VALOR_ATUAL", 0) or 0)
+        v_ant   = float(row.get("VALOR_ANT",   0) or 0)
+        v_atual_fmt = f"R$ {v_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        v_ant_fmt   = f"R$ {v_ant:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{v_atual_fmt}</td>"
+            f"<td>{v_ant_fmt}</td>"
+            f"<td>{row.get('PERC_VALOR', '-')}%</td>"
+            f"</tr>"
+        )
+
+    return (
+        f"{linha_gestores_html(grupo)}"
+        f"<b>Alerta de Valor Total - Aumento &gt;{PERC_ALERTA}% (vs. A-1)</b><br>"
+        f"{len(df)} unidade(s) com variacao relevante<br><br>"
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>Valor Atual</th><th>Valor A-1</th><th>% Variacao</th>"
+        f"</tr>"
+        f"{linhas}"
+        f"</table>"
+    )
+
+
+# ==========================================================
+# E-MAIL — SMTP (Office 365)
+# ==========================================================
+def enviar_email(assunto, corpo_html, destinatarios):
+    """Envia e-mail HTML via SMTP Office 365 (smtp.office365.com:587 com STARTTLS)."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = assunto
+    msg["From"]    = EMAIL_REMETENTE
+    msg["To"]      = ", ".join(destinatarios)
+    msg.attach(MIMEText(corpo_html, "html", "utf-8"))
+
+    with smtplib.SMTP(SMTP_CONFIG["host"], SMTP_CONFIG["port"]) as smtp:
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.login(SMTP_CONFIG["user"], SMTP_CONFIG["password"])
+        smtp.sendmail(EMAIL_REMETENTE, destinatarios, msg.as_string())
+
+
 # ==========================================================
 # EXECUÇÃO
 # ==========================================================
@@ -233,22 +431,22 @@ def executar_fluxo():
     print("Iniciando fluxo")
     print("=" * 50)
 
-    print("\n[1/4] Buscando vencimentos de amanha...")
+    print("\n[1/8] Buscando vencimentos de amanha...")
     df_vencimentos = buscar_vencimentos_amanha()
     print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
-    print("\n[2/4] Enviando vencimentos por grupo...")
+    print("\n[2/8] Enviando vencimentos por grupo...")
     for grupo in df_vencimentos["GRUPO"].unique():
         df_grupo = df_vencimentos[df_vencimentos["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
         enviar_via_webhook(montar_mensagem_html(df_grupo, grupo), grupo)
         print("   Enviado com sucesso!")
 
-    print("\n[3/4] Buscando unidades com emissao atrasada...")
+    print("\n[3/8] Buscando unidades com emissao atrasada...")
     df_emissao = buscar_unidades_sem_emissao()
     print(f"      {len(df_emissao)} unidade(s) com atraso encontrada(s).")
 
-    print("\n[4/4] Enviando emissoes atrasadas por grupo...")
+    print("\n[4/8] Enviando emissoes atrasadas por grupo...")
     for grupo in df_emissao["GRUPO"].unique():
         df_grupo = df_emissao[df_emissao["GRUPO"] == grupo].reset_index(drop=True)
         mensagem = montar_mensagem_html_emissao(df_grupo, grupo)
@@ -256,6 +454,36 @@ def executar_fluxo():
             print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
             enviar_via_webhook(mensagem, grupo)
             print("   Enviado com sucesso!")
+
+    print("\n[5/8] Buscando variacao de consumo (vs. A-1)...")
+    df_consumo = buscar_variacao_consumo()
+    print(f"      {len(df_consumo)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
+
+    print("\n[6/8] Enviando variacao de consumo por grupo...")
+    for grupo in df_consumo["GRUPO"].unique():
+        df_grupo = df_consumo[df_consumo["GRUPO"] == grupo].reset_index(drop=True)
+        mensagem = montar_mensagem_html_consumo(df_grupo, grupo)
+        if mensagem:
+            print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+            enviar_via_webhook(mensagem, grupo)
+            assunto = f"[Alerta Consumo] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
+            enviar_email(assunto, mensagem, [EMAIL_TESTE])
+            print("   Enviado com sucesso (Teams + e-mail)!")
+
+    print("\n[7/8] Buscando variacao de valor total (vs. A-1)...")
+    df_valor = buscar_variacao_valor()
+    print(f"      {len(df_valor)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
+
+    print("\n[8/8] Enviando variacao de valor por grupo...")
+    for grupo in df_valor["GRUPO"].unique():
+        df_grupo = df_valor[df_valor["GRUPO"] == grupo].reset_index(drop=True)
+        mensagem = montar_mensagem_html_valor(df_grupo, grupo)
+        if mensagem:
+            print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+            enviar_via_webhook(mensagem, grupo)
+            assunto = f"[Alerta Valor] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
+            enviar_email(assunto, mensagem, [EMAIL_TESTE])
+            print("   Enviado com sucesso (Teams + e-mail)!")
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
