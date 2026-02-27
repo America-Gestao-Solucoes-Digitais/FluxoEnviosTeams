@@ -69,10 +69,6 @@ def buscar_unidades_sem_emissao():
         ORDER BY DIAS_SEM_EMISSAO DESC
     """
     df = pd.read_sql(query, conn)
-
-    # Filtrando apenas o cliente DASA
-    df = df[df["GRUPO"].str.contains("DASA", case=False, na=False)].reset_index(drop=True)
-
     conn.close()
     return df
 
@@ -124,6 +120,35 @@ def enviar_via_webhook(mensagem_html, grupo):
     resp.raise_for_status()
 
 
+def montar_mensagem_html_emissao(df):
+    """Monta tabela HTML com unidades com emissão atrasada (>35 dias)."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        ultima = row.get("ULTIMA_EMISSAO")
+        ultima_fmt = pd.Timestamp(ultima).strftime("%d/%m/%Y") if pd.notna(ultima) else "Sem emissao"
+        dias = row.get("DIAS_SEM_EMISSAO", "-")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('INSTALACAO_MATRICULA', '-')}</td>"
+            f"<td>{ultima_fmt}</td>"
+            f"<td>{dias}</td>"
+            f"</tr>"
+        )
+
+    return (
+        f"<b>Unidades sem emissao (&gt;35 dias)</b><br>"
+        f"{len(df)} unidade(s) com atraso<br><br>"
+        f"<table>"
+        f"<tr><th>Unidade</th><th>Instalacao</th><th>Ultima Emissao</th><th>Dias</th></tr>"
+        f"{linhas}"
+        f"</table>"
+    )
+
+
 def montar_mensagem_html(df):
     """Monta tabela HTML com os vencimentos do dia seguinte."""
     amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
@@ -169,20 +194,29 @@ def executar_fluxo():
     print("Iniciando fluxo")
     print("=" * 50)
 
-    print("\n[1/2] Buscando vencimentos de amanha no banco...")
+    print("\n[1/4] Buscando vencimentos de amanha...")
     df_vencimentos = buscar_vencimentos_amanha()
-    print(f"      {len(df_vencimentos)} fatura(s) encontrada(s) no total.")
+    print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
 
-    grupos = df_vencimentos["GRUPO"].unique()
-    print(f"      {len(grupos)} grupo(s) com vencimento: {list(grupos)}")
-
-    print("\n[2/2] Enviando para o Teams por grupo...")
-    for grupo in grupos:
+    print("\n[2/4] Enviando vencimentos por grupo...")
+    for grupo in df_vencimentos["GRUPO"].unique():
         df_grupo = df_vencimentos[df_vencimentos["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
-        mensagem = montar_mensagem_html(df_grupo)
-        enviar_via_webhook(mensagem, grupo)
+        enviar_via_webhook(montar_mensagem_html(df_grupo), grupo)
         print("   Enviado com sucesso!")
+
+    print("\n[3/4] Buscando unidades com emissao atrasada...")
+    df_emissao = buscar_unidades_sem_emissao()
+    print(f"      {len(df_emissao)} unidade(s) com atraso encontrada(s).")
+
+    print("\n[4/4] Enviando emissoes atrasadas por grupo...")
+    for grupo in df_emissao["GRUPO"].unique():
+        df_grupo = df_emissao[df_emissao["GRUPO"] == grupo].reset_index(drop=True)
+        mensagem = montar_mensagem_html_emissao(df_grupo)
+        if mensagem:
+            print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+            enviar_via_webhook(mensagem, grupo)
+            print("   Enviado com sucesso!")
 
     print("\n" + "=" * 50)
     print("Fluxo concluido.")
