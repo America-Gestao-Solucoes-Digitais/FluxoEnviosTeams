@@ -54,7 +54,7 @@ GRUPOS_EXCLUIDOS = (
 #      e o array de entities com {type: "mention", text: "<at>Nome</at>", mentioned: {id, displayName}}
 GESTORES_POR_GRUPO = {
     "ABIJCSUD":       [
-        {"email": "guilherme.garcia@voraenergia.com.br", "nome": "Guilherme Garcia"},
+        {"email": "guilherme.garcia@voraenergia.com.br", "nome": "Guilherme Abdul"},
         {"email": "wanderson.santos@voraenergia.com.br", "nome": "Wanderson Santos"},
     ],
     "DASA":           [
@@ -62,7 +62,7 @@ GESTORES_POR_GRUPO = {
         {"email": "sabrina.gomes@voraenergia.com.br",    "nome": "Sabrina Gomes"},
     ],
     "MAGAZINE LUIZA": [
-        {"email": "guilherme.garcia@voraenergia.com.br", "nome": "Guilherme Garcia"},
+        {"email": "guilherme.garcia@voraenergia.com.br", "nome": "Guilherme Abdul"},
     ],
     "MARISA":         [
         {"email": "gustavo.felix@voraenergia.com.br",    "nome": "Gustavo Felix"},
@@ -126,6 +126,7 @@ def buscar_unidades_sem_emissao():
             c.INSTALACAO_MATRICULA,
             c.GRUPO,
             c.NOME_UNIDADE,
+            c.DISTRIBUIDORA,
             MAX(f.DATA_EMISSAO)                          AS ULTIMA_EMISSAO,
             DATEDIFF(CURDATE(), MAX(f.DATA_EMISSAO))     AS DIAS_SEM_EMISSAO
         FROM tb_clientes_gestao_faturas AS c
@@ -135,7 +136,7 @@ def buscar_unidades_sem_emissao():
           AND c.STATUS_UNIDADE = 'Ativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
-        GROUP BY c.INSTALACAO_MATRICULA, c.GRUPO, c.NOME_UNIDADE
+        GROUP BY c.INSTALACAO_MATRICULA, c.GRUPO, c.NOME_UNIDADE, c.DISTRIBUIDORA
         HAVING DIAS_SEM_EMISSAO > 50 OR ULTIMA_EMISSAO IS NULL
         ORDER BY DIAS_SEM_EMISSAO DESC
     """
@@ -159,7 +160,8 @@ def buscar_vencimentos_amanha():
             f.COD_INSTALACAO,
             f.DATA_VENCIMENTO,
             f.VALOR_TOTAL,
-            c.GRUPO
+            c.GRUPO,
+            c.DISTRIBUIDORA
         FROM tb_dfat_gestao_faturas_energia_novo AS f
         INNER JOIN tb_clientes_gestao_faturas AS c
             ON f.COD_INSTALACAO = c.INSTALACAO_MATRICULA
@@ -187,6 +189,7 @@ def buscar_variacao_consumo():
             a.COD_INSTALACAO,
             c.GRUPO,
             c.NOME_UNIDADE,
+            a.DISTRIBUIDORA,
             DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
             DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
             a.CONSUMO_LIDO_FP                                              AS FP_ATUAL,
@@ -232,6 +235,7 @@ def buscar_variacao_valor():
             a.COD_INSTALACAO,
             c.GRUPO,
             c.NOME_UNIDADE,
+            a.DISTRIBUIDORA,
             DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
             DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
             a.VALOR_TOTAL                                                  AS VALOR_ATUAL,
@@ -323,6 +327,7 @@ def montar_mensagem_html_emissao(df, grupo):
             f"<tr>"
             f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
             f"<td>{row.get('INSTALACAO_MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{ultima_fmt}</td>"
             f"<td>{dias}</td>"
             f"</tr>"
@@ -333,7 +338,7 @@ def montar_mensagem_html_emissao(df, grupo):
         f"<b>Unidades sem emissao (&gt;50 dias)</b><br>"
         f"{len(df)} unidade(s) com atraso<br><br>"
         f"<table>"
-        f"<tr><th>Unidade</th><th>Instalacao</th><th>Ultima Emissao</th><th>Dias</th></tr>"
+        f"<tr><th>Unidade</th><th>Instalacao</th><th>Distribuidora</th><th>Ultima Emissao</th><th>Dias</th></tr>"
         f"{linhas}"
         f"</table>"
     )
@@ -362,6 +367,7 @@ def montar_mensagem_html(df, grupo):
             f"<tr>"
             f"<td>{row.get('GRUPO', '-')}</td>"
             f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{amanha}</td>"
             f"<td>{valor_fmt}</td>"
             f"</tr>"
@@ -372,7 +378,7 @@ def montar_mensagem_html(df, grupo):
         f"<b>Vencimentos para amanha - {amanha}</b><br>"
         f"{total_faturas} fatura(s) &nbsp;|&nbsp; Total: {total_fmt}<br><br>"
         f"<table>"
-        f"<tr><th>Grupo</th><th>Instalacao</th><th>Vencimento</th><th>Valor (R$)</th></tr>"
+        f"<tr><th>Grupo</th><th>Instalacao</th><th>Distribuidora</th><th>Vencimento</th><th>Valor (R$)</th></tr>"
         f"{linhas}"
         f"</table>"
     )
@@ -389,6 +395,7 @@ def montar_mensagem_html_consumo(df, grupo):
             f"<tr>"
             f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
             f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{row.get('REF_ATUAL', '-')}</td>"
             f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
             f"<td>{row.get('FP_ATUAL', '-')}</td>"
@@ -406,7 +413,7 @@ def montar_mensagem_html_consumo(df, grupo):
         f"{len(df)} unidade(s) com variacao relevante<br><br>"
         f"<table>"
         f"<tr>"
-        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
         f"<th>Ref. Atual</th><th>Ref. A-1</th>"
         f"<th>FP Atual</th><th>FP A-1</th><th>% FP</th>"
         f"<th>P Atual</th><th>P A-1</th><th>% P</th>"
@@ -431,6 +438,7 @@ def montar_mensagem_html_valor(df, grupo):
             f"<tr>"
             f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
             f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{row.get('REF_ATUAL', '-')}</td>"
             f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
             f"<td>{v_atual_fmt}</td>"
@@ -445,7 +453,7 @@ def montar_mensagem_html_valor(df, grupo):
         f"{len(df)} unidade(s) com variacao relevante<br><br>"
         f"<table>"
         f"<tr>"
-        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
         f"<th>Ref. Atual</th><th>Ref. A-1</th>"
         f"<th>Valor Atual</th><th>Valor A-1</th><th>% Variacao</th>"
         f"</tr>"
@@ -483,6 +491,79 @@ def _envolver_email(titulo, subtitulo, tabela_html):
     )
 
 
+def montar_email_html_emissao(df, grupo):
+    """Monta e-mail HTML formatado com tabela bordada para unidades com emissão atrasada."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        ultima = row.get("ULTIMA_EMISSAO")
+        ultima_fmt = pd.Timestamp(ultima).strftime("%d/%m/%Y") if pd.notna(ultima) else "Sem emissao"
+        dias = row.get("DIAS_SEM_EMISSAO", "-")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('INSTALACAO_MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{ultima_fmt}</td>"
+            f"<td>{dias}</td>"
+            f"</tr>"
+        )
+
+    tabela = (
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
+        f"<th>Ultima Emissao</th><th>Dias sem Emissao</th>"
+        f"</tr>{linhas}</table>"
+    )
+
+    return _envolver_email(
+        titulo=f"Emiss&otilde;es Atrasadas (&gt;50 dias) &mdash; {grupo}",
+        subtitulo=f"{len(df)} unidade(s) sem emiss&atilde;o h&aacute; mais de 50 dias",
+        tabela_html=tabela,
+    )
+
+
+def montar_email_html_vencimentos(df, grupo):
+    """Monta e-mail HTML formatado com tabela bordada para vencimentos do dia seguinte."""
+    if df.empty:
+        return None
+
+    amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+    total_geral = float(df["VALOR_TOTAL"].sum())
+    total_fmt = f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    linhas = ""
+    for _, row in df.iterrows():
+        valor = float(row.get("VALOR_TOTAL", 0))
+        valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('GRUPO', '-')}</td>"
+            f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{amanha}</td>"
+            f"<td>{valor_fmt}</td>"
+            f"</tr>"
+        )
+
+    tabela = (
+        f"<table>"
+        f"<tr>"
+        f"<th>Grupo</th><th>Instalacao</th><th>Distribuidora</th>"
+        f"<th>Vencimento</th><th>Valor (R$)</th>"
+        f"</tr>{linhas}</table>"
+    )
+
+    return _envolver_email(
+        titulo=f"Vencimentos para amanh&atilde; &mdash; {grupo}",
+        subtitulo=f"{len(df)} fatura(s) &nbsp;|&nbsp; Total: {total_fmt}",
+        tabela_html=tabela,
+    )
+
+
 def montar_email_html_consumo(df, grupo):
     """Monta e-mail HTML formatado com tabela bordada para alerta de consumo."""
     if df.empty:
@@ -494,6 +575,7 @@ def montar_email_html_consumo(df, grupo):
             f"<tr>"
             f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
             f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{row.get('REF_ATUAL', '-')}</td>"
             f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
             f"<td>{row.get('FP_ATUAL', '-')}</td>"
@@ -508,7 +590,7 @@ def montar_email_html_consumo(df, grupo):
     tabela = (
         f"<table>"
         f"<tr>"
-        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
         f"<th>Ref. Atual</th><th>Ref. A-1</th>"
         f"<th>FP Atual</th><th>FP A-1</th><th>% FP</th>"
         f"<th>P Atual</th><th>P A-1</th><th>% P</th>"
@@ -537,6 +619,7 @@ def montar_email_html_valor(df, grupo):
             f"<tr>"
             f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
             f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{row.get('REF_ATUAL', '-')}</td>"
             f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
             f"<td>{v_atual_fmt}</td>"
@@ -548,7 +631,7 @@ def montar_email_html_valor(df, grupo):
     tabela = (
         f"<table>"
         f"<tr>"
-        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
         f"<th>Ref. Atual</th><th>Ref. A-1</th>"
         f"<th>Valor Atual</th><th>Valor A-1</th><th>% Variacao</th>"
         f"</tr>{linhas}</table>"
@@ -589,12 +672,17 @@ def executar_vencimentos():
     df = buscar_vencimentos_amanha()
     print(f"      {len(df)} fatura(s) encontrada(s).")
 
-    print("\n[2/2] Enviando por grupo...")
+    print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
     for grupo in df["GRUPO"].unique():
         df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
         enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html)
-        print("   Enviado com sucesso!")
+        corpo_email = montar_email_html_vencimentos(df_grupo, grupo)
+        if corpo_email:
+            amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+            assunto = f"[Vencimentos] {grupo} - {len(df_grupo)} fatura(s) para {amanha}"
+            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+        print("   Enviado com sucesso (Teams + e-mail)!")
 
     print("\nTarefa concluida.")
 
@@ -608,12 +696,16 @@ def executar_emissoes():
     df = buscar_unidades_sem_emissao()
     print(f"      {len(df)} unidade(s) encontrada(s).")
 
-    print("\n[2/2] Enviando por grupo...")
+    print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
     for grupo in df["GRUPO"].unique():
         df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
         enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html_emissao)
-        print("   Enviado com sucesso!")
+        corpo_email = montar_email_html_emissao(df_grupo, grupo)
+        if corpo_email:
+            assunto = f"[Emissoes Atrasadas] {grupo} - {len(df_grupo)} unidade(s) sem emissao >50 dias"
+            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+        print("   Enviado com sucesso (Teams + e-mail)!")
 
     print("\nTarefa concluida.")
 
