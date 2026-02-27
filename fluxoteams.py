@@ -1,4 +1,5 @@
 import os
+import argparse
 import smtplib
 import pandas as pd
 import mysql.connector
@@ -14,10 +15,10 @@ load_dotenv()
 # CONFIGURAÇÕES GERAIS
 # ==========================================================
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST"),
-    "user": os.getenv("DB_USER"),
+    "host":     os.getenv("DB_HOST"),
+    "user":     os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
-    "database": os.getenv("DB_NAME")
+    "database": os.getenv("DB_NAME"),
 }
 
 # Webhook do Power Automate para envio no Teams
@@ -31,62 +32,91 @@ SMTP_CONFIG = {
     "password": os.getenv("SMTP_PASS"),
 }
 
-# E-mail do remetente (deve ser o mesmo do SMTP_USER) e destinatário de teste
+# E-mail remetente e destinatário de teste
 EMAIL_REMETENTE = os.getenv("SMTP_USER")
-EMAIL_TESTE     = "guilherme.garcia@voraenergia.com.br"  # trocar para GESTORES_POR_GRUPO em produção
-PERC_ALERTA     = 30  # % de aumento para disparar alerta
+EMAIL_TESTE     = "guilherme.garcia@voraenergia.com.br"
+PERC_ALERTA     = 30   # % de aumento para disparar alerta
+CHUNK_SIZE      = 50   # linhas por lote no fallback de EntityTooLarge (413)
 
-# Grupos a serem excluídos dos alertas (ex: grandes consumidores com gestão própria ou que não queremos monitorar)
+# Grupos a serem excluídos dos alertas
 GRUPOS_EXCLUIDOS = (
     "GPA", "OI", "ENEL X GD", "VENANCIO", "CVLB",
-    "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS","LIVRE ACL","DROGAL","REDE AMERICAS"
+    "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS", "LIVRE ACL", "DROGAL", "REDE AMERICAS"
 )
 
-# Mapeamento de grupos para e-mails dos gestores responsáveis (para menção no Teams)
+# Mapeamento de grupos para gestores.
+# Cada gestor tem "email" (usado para envio e lookup no PA) e "nome" (usado na menção @Nome no Teams).
+#
+# ATENÇÃO — Para as menções realmente funcionarem no Teams, o fluxo Power Automate precisa:
+#   1. Receber o campo "gestores" (emails separados por ";") e "gestores_nomes" (nomes separados por ";")
+#   2. Para cada email, usar a ação "Get user profile (V2)" para obter o ID do usuário no Azure AD
+#   3. Usar a ação "Post a message in a chat or channel" com o corpo HTML contendo <at>Nome</at>
+#      e o array de entities com {type: "mention", text: "<at>Nome</at>", mentioned: {id, displayName}}
 GESTORES_POR_GRUPO = {
-    "ABIJCSUD":       ["guilherme.garcia@voraenergia.com.br", "wanderson.santos@voraenergia.com.br"],
-    "DASA":           ["bruno.petrillo@voraenergia.com.br", "sabrina.gomes@voraenergia.com.br"],
-    "MAGAZINE LUIZA": ["guilherme.garcia@voraenergia.com.br"],
-    "MARISA":         ["gustavo.felix@voraenergia.com.br"],
-    "PERNAMBUCANAS":  ["caio.augusto@voraenergia.com.br"],
-    "RENNER":         ["caio.augusto@voraenergia.com.br"],
-    "PEPSICO":        ["samuel.santos@voraenergia.com.br"],
-    "SANTANDER":      ["samuel.santos@voraenergia.com.br"],
-    "ZARA":           ["gustavo.felix@voraenergia.com.br"],
-    "KORA":           ["guilherme.viana@voraenergia.com.br"],
+    "ABIJCSUD":       [
+        {"email": "guilherme.garcia@voraenergia.com.br", "nome": "Guilherme Garcia"},
+        {"email": "wanderson.santos@voraenergia.com.br", "nome": "Wanderson Santos"},
+    ],
+    "DASA":           [
+        {"email": "bruno.petrillo@voraenergia.com.br",   "nome": "Bruno Petrillo"},
+        {"email": "sabrina.gomes@voraenergia.com.br",    "nome": "Sabrina Gomes"},
+    ],
+    "MAGAZINE LUIZA": [
+        {"email": "guilherme.garcia@voraenergia.com.br", "nome": "Guilherme Garcia"},
+    ],
+    "MARISA":         [
+        {"email": "gustavo.felix@voraenergia.com.br",    "nome": "Gustavo Felix"},
+    ],
+    "PERNAMBUCANAS":  [
+        {"email": "caio.augusto@voraenergia.com.br",     "nome": "Caio Augusto"},
+    ],
+    "RENNER":         [
+        {"email": "caio.augusto@voraenergia.com.br",     "nome": "Caio Augusto"},
+    ],
+    "PEPSICO":        [
+        {"email": "samuel.santos@voraenergia.com.br",    "nome": "Samuel Santos"},
+    ],
+    "SANTANDER":      [
+        {"email": "samuel.santos@voraenergia.com.br",    "nome": "Samuel Santos"},
+    ],
+    "ZARA":           [
+        {"email": "gustavo.felix@voraenergia.com.br",    "nome": "Gustavo Felix"},
+    ],
+    "KORA":           [
+        {"email": "guilherme.viana@voraenergia.com.br",  "nome": "Guilherme Viana"},
+    ],
 }
+
+
+# ==========================================================
+# HELPERS — GESTORES
+# ==========================================================
+def emails_gestores(grupo):
+    return [g["email"] for g in GESTORES_POR_GRUPO.get(grupo, [])]
+
+
+def nomes_gestores(grupo):
+    return [g["nome"] for g in GESTORES_POR_GRUPO.get(grupo, [])]
+
+
+def linha_gestores_html(grupo):
+    """Retorna linha HTML com menções <at>Nome</at> (formato Teams).
+    O Power Automate usa esses nomes junto com os IDs de usuário para montar as menções reais."""
+    gestores = GESTORES_POR_GRUPO.get(grupo, [])
+    if not gestores:
+        return ""
+    mencoes = ", ".join(f'<at>{g["nome"]}</at>' for g in gestores)
+    return f"<b>Gestores:</b> {mencoes}<br><br>"
 
 
 # ==========================================================
 # BANCO DE DADOS
 # ==========================================================
-def buscar_unidades_gestao_faturas():
-    conn = mysql.connector.connect(**DB_CONFIG)
-    query = """
-        SELECT * FROM tb_clientes_gestao_faturas
-        WHERE UTILIDADE = 'ENERGIA'
-        AND STATUS_UNIDADE = 'Ativa';
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df
-
-
-def buscar_faturas_lidas_gestao_faturas():
-    conn = mysql.connector.connect(**DB_CONFIG)
-    query = """
-        SELECT * FROM tb_dfat_gestao_faturas_energia_novo
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df
-
-
 def buscar_unidades_sem_emissao():
     """
     Busca todas as unidades ativas de ENERGIA e calcula quantos dias
     se passaram desde a última DATA_EMISSAO em tb_dfat_gestao_faturas_energia_novo.
-    Retorna apenas unidades com mais de 35 dias sem emissão (ou sem nenhuma emissão).
+    Retorna apenas unidades com mais de 50 dias sem emissão (ou sem nenhuma emissão).
     Exclui grupos da lista GRUPOS_EXCLUIDOS e grupos com GRUPO NULL.
     """
     excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
@@ -141,15 +171,13 @@ def buscar_vencimentos_amanha():
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
     df = pd.read_sql(query, conn)
-
     conn.close()
     return df
 
 
 def buscar_variacao_consumo():
     """
-    Compara o consumo (FP e P) da referência mais recente com o mesmo mês do ano anterior
-    (REFERENCIA - 100, ex: 202502 → 202402).
+    Compara o consumo (FP e P) da referência mais recente (>= 2026) com o mesmo mês do ano anterior.
     Retorna unidades com variação de consumo FP ou P acima de PERC_ALERTA %.
     """
     excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
@@ -171,6 +199,7 @@ def buscar_variacao_consumo():
         INNER JOIN (
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
             FROM tb_dfat_gestao_faturas_energia_novo
+            WHERE YEAR(REFERENCIA) >= 2026
             GROUP BY COD_INSTALACAO
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
@@ -182,6 +211,7 @@ def buscar_variacao_consumo():
           AND c.STATUS_UNIDADE = 'Ativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
+          AND YEAR(a.REFERENCIA) >= 2026
         HAVING PERC_FP > {PERC_ALERTA} OR PERC_P > {PERC_ALERTA}
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
@@ -192,8 +222,7 @@ def buscar_variacao_consumo():
 
 def buscar_variacao_valor():
     """
-    Compara o VALOR_TOTAL da referência mais recente com o mesmo mês do ano anterior
-    (REFERENCIA - 100).
+    Compara o VALOR_TOTAL da referência mais recente (>= 2026) com o mesmo mês do ano anterior.
     Retorna unidades com variação de valor acima de PERC_ALERTA %.
     """
     excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
@@ -212,6 +241,7 @@ def buscar_variacao_valor():
         INNER JOIN (
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
             FROM tb_dfat_gestao_faturas_energia_novo
+            WHERE YEAR(REFERENCIA) >= 2026
             GROUP BY COD_INSTALACAO
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
@@ -223,6 +253,7 @@ def buscar_variacao_valor():
           AND c.STATUS_UNIDADE = 'Ativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
+          AND YEAR(a.REFERENCIA) >= 2026
         HAVING PERC_VALOR > {PERC_ALERTA}
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
@@ -231,40 +262,51 @@ def buscar_variacao_valor():
     return df
 
 
-
-
-
-
-
-
-
-
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
-def linha_gestores_html(grupo):
-    """Retorna linha HTML com os gestores do grupo para marcar na mensagem."""
-    emails = GESTORES_POR_GRUPO.get(grupo, [])
-    if not emails:
-        return ""
-    mencoes = ", ".join(f"@{e}" for e in emails)
-    return f"<b>Gestores:</b> {mencoes}<br><br>"
-
-
 def enviar_via_webhook(mensagem_html, grupo):
     """Envia mensagem HTML para o Teams via webhook (Power Automate).
-    Passa 'grupo', 'message' e 'gestores' para o fluxo rotear e mencionar os responsáveis."""
-    gestores = ";".join(GESTORES_POR_GRUPO.get(grupo, []))
+    Passa 'grupo', 'message', 'gestores' (emails; sep) e 'gestores_nomes' (nomes; sep)
+    para o fluxo PA rotear e construir as menções reais no Teams."""
     resp = requests.post(
         URL_WEBHOOK,
-        json={"grupo": grupo, "message": mensagem_html, "gestores": gestores},
+        json={
+            "grupo":           grupo,
+            "message":         mensagem_html,
+            "gestores":        ";".join(emails_gestores(grupo)),  # emails para lookup de ID no PA
+            "gestores_nomes":  ";".join(nomes_gestores(grupo)),   # nomes para texto da menção
+        },
         headers={"Content-Type": "application/json"},
-        timeout=10
+        timeout=10,
     )
     print(f"   Status: {resp.status_code}")
     if resp.status_code not in (200, 201, 202):
         print(f"   Resposta: {resp.text[:500]}")
     resp.raise_for_status()
+
+
+def enviar_grupo_com_chunks(df, grupo, montar_fn):
+    """Envia mensagem para o Teams via webhook.
+    Se a resposta for 413 (EntityTooLarge), divide o DataFrame em lotes de CHUNK_SIZE
+    e reenvia cada lote separadamente."""
+    mensagem = montar_fn(df, grupo)
+    if not mensagem:
+        return
+    try:
+        enviar_via_webhook(mensagem, grupo)
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 413:
+            total_lotes = (len(df) - 1) // CHUNK_SIZE + 1
+            print(f"   EntityTooLarge — enviando em {total_lotes} lote(s) de até {CHUNK_SIZE} linhas...")
+            for i in range(0, len(df), CHUNK_SIZE):
+                chunk = df.iloc[i:i + CHUNK_SIZE].reset_index(drop=True)
+                mensagem_chunk = montar_fn(chunk, grupo)
+                if mensagem_chunk:
+                    enviar_via_webhook(mensagem_chunk, grupo)
+                    print(f"   Lote {i // CHUNK_SIZE + 1}/{total_lotes} enviado.")
+        else:
+            raise
 
 
 def montar_mensagem_html_emissao(df, grupo):
@@ -412,12 +454,113 @@ def montar_mensagem_html_valor(df, grupo):
     )
 
 
-
-
-
 # ==========================================================
 # E-MAIL — SMTP (Office 365)
 # ==========================================================
+
+# CSS inline para os e-mails com tabela formatada
+_CSS_EMAIL = """
+    body  { font-family: Arial, sans-serif; font-size: 13px; color: #333333; margin: 0; padding: 20px; }
+    h2    { color: #2e5fa3; margin-bottom: 4px; }
+    p.sub { color: #666666; margin-top: 0; margin-bottom: 16px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+    th    { background-color: #2e5fa3; color: #ffffff; padding: 8px 10px;
+            text-align: left; border: 1px solid #2e5fa3; white-space: nowrap; }
+    td    { padding: 7px 10px; border: 1px solid #c0c0c0; }
+    tr:nth-child(even) td { background-color: #f5f7fa; }
+"""
+
+
+def _envolver_email(titulo, subtitulo, tabela_html):
+    """Envolve o conteúdo em um documento HTML completo com estilos."""
+    return (
+        f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+        f"<style>{_CSS_EMAIL}</style></head><body>"
+        f"<h2>{titulo}</h2>"
+        f'<p class="sub">{subtitulo}</p>'
+        f"{tabela_html}"
+        f"</body></html>"
+    )
+
+
+def montar_email_html_consumo(df, grupo):
+    """Monta e-mail HTML formatado com tabela bordada para alerta de consumo."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{row.get('FP_ATUAL', '-')}</td>"
+            f"<td>{row.get('FP_ANT', '-')}</td>"
+            f"<td>{row.get('PERC_FP', '-')}%</td>"
+            f"<td>{row.get('P_ATUAL', '-')}</td>"
+            f"<td>{row.get('P_ANT', '-')}</td>"
+            f"<td>{row.get('PERC_P', '-')}%</td>"
+            f"</tr>"
+        )
+
+    tabela = (
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>FP Atual</th><th>FP A-1</th><th>% FP</th>"
+        f"<th>P Atual</th><th>P A-1</th><th>% P</th>"
+        f"</tr>{linhas}</table>"
+    )
+
+    return _envolver_email(
+        titulo=f"Alerta de Consumo &mdash; {grupo}",
+        subtitulo=f"Aumento &gt;{PERC_ALERTA}% vs. mesmo m&ecirc;s do ano anterior &nbsp;|&nbsp; {len(df)} unidade(s)",
+        tabela_html=tabela,
+    )
+
+
+def montar_email_html_valor(df, grupo):
+    """Monta e-mail HTML formatado com tabela bordada para alerta de valor total."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        v_atual = float(row.get("VALOR_ATUAL", 0) or 0)
+        v_ant   = float(row.get("VALOR_ANT",   0) or 0)
+        v_atual_fmt = f"R$ {v_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        v_ant_fmt   = f"R$ {v_ant:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('COD_INSTALACAO', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{v_atual_fmt}</td>"
+            f"<td>{v_ant_fmt}</td>"
+            f"<td>{row.get('PERC_VALOR', '-')}%</td>"
+            f"</tr>"
+        )
+
+    tabela = (
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Instalacao</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>Valor Atual</th><th>Valor A-1</th><th>% Variacao</th>"
+        f"</tr>{linhas}</table>"
+    )
+
+    return _envolver_email(
+        titulo=f"Alerta de Valor Total &mdash; {grupo}",
+        subtitulo=f"Aumento &gt;{PERC_ALERTA}% vs. mesmo m&ecirc;s do ano anterior &nbsp;|&nbsp; {len(df)} unidade(s)",
+        tabela_html=tabela,
+    )
+
+
 def enviar_email(assunto, corpo_html, destinatarios):
     """Envia e-mail HTML via SMTP Office 365 (smtp.office365.com:587 com STARTTLS)."""
     msg = MIMEMultipart("alternative")
@@ -433,79 +576,144 @@ def enviar_email(assunto, corpo_html, destinatarios):
         smtp.sendmail(EMAIL_REMETENTE, destinatarios, msg.as_string())
 
 
-
-
-
-
-
 # ==========================================================
-# EXECUÇÃO
+# TAREFAS INDIVIDUAIS
+# (cada uma pode ser chamada isoladamente via --tarefa)
 # ==========================================================
-def executar_fluxo():
-    print("=" * 50)
-    print("Iniciando fluxo")
+def executar_vencimentos():
+    print("\n" + "=" * 50)
+    print("TAREFA: Vencimentos de amanha")
     print("=" * 50)
 
-    print("\n[1/8] Buscando vencimentos de amanha...")
-    df_vencimentos = buscar_vencimentos_amanha()
-    print(f"      {len(df_vencimentos)} fatura(s) encontrada(s).")
+    print("\n[1/2] Buscando vencimentos de amanha...")
+    df = buscar_vencimentos_amanha()
+    print(f"      {len(df)} fatura(s) encontrada(s).")
 
-    print("\n[2/8] Enviando vencimentos por grupo...")
-    for grupo in df_vencimentos["GRUPO"].unique():
-        df_grupo = df_vencimentos[df_vencimentos["GRUPO"] == grupo].reset_index(drop=True)
+    print("\n[2/2] Enviando por grupo...")
+    for grupo in df["GRUPO"].unique():
+        df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
-        enviar_via_webhook(montar_mensagem_html(df_grupo, grupo), grupo)
+        enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html)
         print("   Enviado com sucesso!")
 
-    print("\n[3/8] Buscando unidades com emissao atrasada...")
-    df_emissao = buscar_unidades_sem_emissao()
-    print(f"      {len(df_emissao)} unidade(s) com atraso encontrada(s).")
+    print("\nTarefa concluida.")
 
-    print("\n[4/8] Enviando emissoes atrasadas por grupo...")
-    for grupo in df_emissao["GRUPO"].unique():
-        df_grupo = df_emissao[df_emissao["GRUPO"] == grupo].reset_index(drop=True)
-        mensagem = montar_mensagem_html_emissao(df_grupo, grupo)
-        if mensagem:
-            print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
-            enviar_via_webhook(mensagem, grupo)
-            print("   Enviado com sucesso!")
 
-    print("\n[5/8] Buscando variacao de consumo (vs. A-1)...")
-    df_consumo = buscar_variacao_consumo()
-    print(f"      {len(df_consumo)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
-
-    print("\n[6/8] Enviando variacao de consumo por grupo...")
-    for grupo in df_consumo["GRUPO"].unique():
-        df_grupo = df_consumo[df_consumo["GRUPO"] == grupo].reset_index(drop=True)
-        mensagem = montar_mensagem_html_consumo(df_grupo, grupo)
-        if mensagem:
-            print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
-            enviar_via_webhook(mensagem, grupo)
-            assunto = f"[Alerta Consumo] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
-            enviar_email(assunto, mensagem, [EMAIL_TESTE])
-            print("   Enviado com sucesso (Teams + e-mail)!")
-
-    print("\n[7/8] Buscando variacao de valor total (vs. A-1)...")
-    df_valor = buscar_variacao_valor()
-    print(f"      {len(df_valor)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
-
-    print("\n[8/8] Enviando variacao de valor por grupo...")
-    for grupo in df_valor["GRUPO"].unique():
-        df_grupo = df_valor[df_valor["GRUPO"] == grupo].reset_index(drop=True)
-        mensagem = montar_mensagem_html_valor(df_grupo, grupo)
-        if mensagem:
-            print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
-            enviar_via_webhook(mensagem, grupo)
-            assunto = f"[Alerta Valor] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
-            enviar_email(assunto, mensagem, [EMAIL_TESTE])
-            print("   Enviado com sucesso (Teams + e-mail)!")
-
+def executar_emissoes():
     print("\n" + "=" * 50)
-    print("Fluxo concluido.")
+    print("TAREFA: Emissoes atrasadas")
+    print("=" * 50)
+
+    print("\n[1/2] Buscando unidades com emissao atrasada (>50 dias)...")
+    df = buscar_unidades_sem_emissao()
+    print(f"      {len(df)} unidade(s) encontrada(s).")
+
+    print("\n[2/2] Enviando por grupo...")
+    for grupo in df["GRUPO"].unique():
+        df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+        enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html_emissao)
+        print("   Enviado com sucesso!")
+
+    print("\nTarefa concluida.")
+
+
+def executar_consumo():
+    print("\n" + "=" * 50)
+    print("TAREFA: Variacao de consumo (vs. A-1)")
+    print("=" * 50)
+
+    print(f"\n[1/2] Buscando variacao de consumo (>= 2026, vs. A-1)...")
+    df = buscar_variacao_consumo()
+    print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
+
+    print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    for grupo in df["GRUPO"].unique():
+        df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+        enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html_consumo)
+        corpo_email = montar_email_html_consumo(df_grupo, grupo)
+        if corpo_email:
+            assunto = f"[Alerta Consumo] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
+            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+        print("   Enviado com sucesso (Teams + e-mail)!")
+
+    print("\nTarefa concluida.")
+
+
+def executar_valores():
+    print("\n" + "=" * 50)
+    print("TAREFA: Variacao de valor total (vs. A-1)")
+    print("=" * 50)
+
+    print(f"\n[1/2] Buscando variacao de valor total (>= 2026, vs. A-1)...")
+    df = buscar_variacao_valor()
+    print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
+
+    print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    for grupo in df["GRUPO"].unique():
+        df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+        enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html_valor)
+        corpo_email = montar_email_html_valor(df_grupo, grupo)
+        if corpo_email:
+            assunto = f"[Alerta Valor] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
+            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+        print("   Enviado com sucesso (Teams + e-mail)!")
+
+    print("\nTarefa concluida.")
+
+
+def executar_fluxo():
+    """Executa todas as tarefas em sequência (equivale a rodar sem --tarefa)."""
+    print("=" * 50)
+    print("Iniciando fluxo completo")
+    print("=" * 50)
+    executar_valores()
+    executar_consumo()
+    executar_emissoes()
+    executar_vencimentos()
+    print("\n" + "=" * 50)
+    print("Fluxo completo concluido.")
     print("=" * 50)
 
 
-
-# Permite executar o fluxo diretamente por linha de comando (python fluxoteams.py)
+# ==========================================================
+# PONTO DE ENTRADA
+# ==========================================================
+# Agendador de Tarefas do Windows — configurar 4 entradas:
+#   09:00  python fluxoteams.py --tarefa valores
+#   10:00  python fluxoteams.py --tarefa consumos
+#   11:00  python fluxoteams.py --tarefa emissoes
+#   12:00  python fluxoteams.py --tarefa vencimentos
+#
+# Para rodar tudo de uma vez (sem agendador):
+#   python fluxoteams.py
 if __name__ == "__main__":
-    executar_fluxo()
+    parser = argparse.ArgumentParser(
+        description="FluxoEnviosTeams — Alertas de Gestao de Faturas de Energia"
+    )
+    parser.add_argument(
+        "--tarefa",
+        choices=["valores", "consumos", "emissoes", "vencimentos"],
+        default=None,
+        help=(
+            "Tarefa a executar isoladamente. "
+            "Omitir executa todas as tarefas em sequencia. "
+            "Valores: 09h | Consumos: 10h | Emissoes: 11h | Vencimentos: 12h"
+        ),
+    )
+    args = parser.parse_args()
+
+    TAREFAS = {
+        "valores":     executar_valores,
+        "consumos":    executar_consumo,
+        "emissoes":    executar_emissoes,
+        "vencimentos": executar_vencimentos,
+    }
+
+    fn = TAREFAS.get(args.tarefa)
+    if fn:
+        fn()
+    else:
+        executar_fluxo()
