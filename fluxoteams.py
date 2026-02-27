@@ -19,6 +19,11 @@ DB_CONFIG = {
 
 URL_WEBHOOK = os.getenv("URL_WEBHOOK")
 
+GRUPOS_EXCLUIDOS = (
+    "GPA", "OI", "ENEL X GD", "VENANCIO", "CLVB",
+    "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS"
+)
+
 GESTORES_POR_GRUPO = {
     "ABIJCSUD":       ["guilherme.garcia@voraenergia.com.br", "wanderson.santos@voraenergia.com.br"],
     "DASA":           ["bruno.petrillo@voraenergia.com.br", "sabrina.gomes@voraenergia.com.br"],
@@ -63,9 +68,11 @@ def buscar_unidades_sem_emissao():
     Busca todas as unidades ativas de ENERGIA e calcula quantos dias
     se passaram desde a última DATA_EMISSAO em tb_dfat_gestao_faturas_energia_novo.
     Retorna apenas unidades com mais de 35 dias sem emissão (ou sem nenhuma emissão).
+    Exclui grupos da lista GRUPOS_EXCLUIDOS e grupos com GRUPO NULL.
     """
+    excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
     conn = mysql.connector.connect(**DB_CONFIG)
-    query = """
+    query = f"""
         SELECT
             c.INSTALACAO_MATRICULA,
             c.GRUPO,
@@ -77,6 +84,8 @@ def buscar_unidades_sem_emissao():
             ON c.INSTALACAO_MATRICULA = f.COD_INSTALACAO
         WHERE c.UTILIDADE = 'ENERGIA'
           AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.GRUPO IS NOT NULL
+          AND c.GRUPO NOT IN ({excluidos})
         GROUP BY c.INSTALACAO_MATRICULA, c.GRUPO, c.NOME_UNIDADE
         HAVING DIAS_SEM_EMISSAO > 35 OR ULTIMA_EMISSAO IS NULL
         ORDER BY DIAS_SEM_EMISSAO DESC
@@ -93,6 +102,7 @@ def buscar_vencimentos_amanha():
       - tb_clientes_gestao_faturas           (coluna INSTALACAO_MATRICULA)
     """
     amanha = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
 
     conn = mysql.connector.connect(**DB_CONFIG)
     query = f"""
@@ -107,6 +117,8 @@ def buscar_vencimentos_amanha():
         WHERE DATE(f.DATA_VENCIMENTO) = '{amanha}'
           AND c.UTILIDADE = 'ENERGIA'
           AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.GRUPO IS NOT NULL
+          AND c.GRUPO NOT IN ({excluidos})
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
     df = pd.read_sql(query, conn)
@@ -118,6 +130,21 @@ def buscar_vencimentos_amanha():
 # ==========================================================
 # MICROSOFT TEAMS — WEBHOOK
 # ==========================================================
+def email_para_nome(email):
+    """Converte e-mail em nome para exibição. Ex: guilherme.garcia@... -> Guilherme Garcia"""
+    local = email.split("@")[0]
+    return " ".join(p.capitalize() for p in local.split("."))
+
+
+def linha_gestores_html(grupo):
+    """Retorna linha HTML com os gestores do grupo para marcar na mensagem."""
+    emails = GESTORES_POR_GRUPO.get(grupo, [])
+    if not emails:
+        return ""
+    nomes = ", ".join(f"<at>{email_para_nome(e)}</at>" for e in emails)
+    return f"<b>Gestores:</b> {nomes}<br><br>"
+
+
 def enviar_via_webhook(mensagem_html, grupo):
     """Envia mensagem HTML para o Teams via webhook (Power Automate).
     Passa 'grupo', 'message' e 'gestores' para o fluxo rotear e mencionar os responsáveis."""
@@ -134,7 +161,7 @@ def enviar_via_webhook(mensagem_html, grupo):
     resp.raise_for_status()
 
 
-def montar_mensagem_html_emissao(df):
+def montar_mensagem_html_emissao(df, grupo):
     """Monta tabela HTML com unidades com emissão atrasada (>35 dias)."""
     if df.empty:
         return None
@@ -154,6 +181,7 @@ def montar_mensagem_html_emissao(df):
         )
 
     return (
+        f"{linha_gestores_html(grupo)}"
         f"<b>Unidades sem emissao (&gt;35 dias)</b><br>"
         f"{len(df)} unidade(s) com atraso<br><br>"
         f"<table>"
@@ -163,12 +191,13 @@ def montar_mensagem_html_emissao(df):
     )
 
 
-def montar_mensagem_html(df):
+def montar_mensagem_html(df, grupo):
     """Monta tabela HTML com os vencimentos do dia seguinte."""
     amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
 
     if df.empty:
         return (
+            f"{linha_gestores_html(grupo)}"
             f"<b>Vencimentos para amanha - {amanha}</b><br>"
             "Nenhuma fatura encontrada."
         )
@@ -191,6 +220,7 @@ def montar_mensagem_html(df):
         )
 
     return (
+        f"{linha_gestores_html(grupo)}"
         f"<b>Vencimentos para amanha - {amanha}</b><br>"
         f"{total_faturas} fatura(s) &nbsp;|&nbsp; Total: {total_fmt}<br><br>"
         f"<table>"
@@ -216,7 +246,7 @@ def executar_fluxo():
     for grupo in df_vencimentos["GRUPO"].unique():
         df_grupo = df_vencimentos[df_vencimentos["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
-        enviar_via_webhook(montar_mensagem_html(df_grupo), grupo)
+        enviar_via_webhook(montar_mensagem_html(df_grupo, grupo), grupo)
         print("   Enviado com sucesso!")
 
     print("\n[3/4] Buscando unidades com emissao atrasada...")
@@ -226,7 +256,7 @@ def executar_fluxo():
     print("\n[4/4] Enviando emissoes atrasadas por grupo...")
     for grupo in df_emissao["GRUPO"].unique():
         df_grupo = df_emissao[df_emissao["GRUPO"] == grupo].reset_index(drop=True)
-        mensagem = montar_mensagem_html_emissao(df_grupo)
+        mensagem = montar_mensagem_html_emissao(df_grupo, grupo)
         if mensagem:
             print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
             enviar_via_webhook(mensagem, grupo)
