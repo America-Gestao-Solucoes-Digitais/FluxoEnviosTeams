@@ -160,14 +160,14 @@ def buscar_variacao_consumo():
             a.COD_INSTALACAO,
             c.GRUPO,
             c.NOME_UNIDADE,
-            a.REFERENCIA                                                   AS REF_ATUAL,
-            (a.REFERENCIA - 100)                                           AS REF_ANTERIOR,
-            a.CONSUMO_FP                                                   AS FP_ATUAL,
-            ant.CONSUMO_FP                                                 AS FP_ANT,
-            ROUND(((a.CONSUMO_FP  - ant.CONSUMO_FP)  / NULLIF(ant.CONSUMO_FP,  0)) * 100, 1) AS PERC_FP,
-            a.CONSUMO_P                                                    AS P_ATUAL,
-            ant.CONSUMO_P                                                  AS P_ANT,
-            ROUND(((a.CONSUMO_P   - ant.CONSUMO_P)   / NULLIF(ant.CONSUMO_P,   0)) * 100, 1) AS PERC_P
+            DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
+            DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
+            a.CONSUMO_LIDO_FP                                              AS FP_ATUAL,
+            ant.CONSUMO_LIDO_FP                                            AS FP_ANT,
+            ROUND(((a.CONSUMO_LIDO_FP  - ant.CONSUMO_LIDO_FP)  / NULLIF(ant.CONSUMO_LIDO_FP,  0)) * 100, 1) AS PERC_FP,
+            a.CONSUMO_LIDO_P                                               AS P_ATUAL,
+            ant.CONSUMO_LIDO_P                                             AS P_ANT,
+            ROUND(((a.CONSUMO_LIDO_P   - ant.CONSUMO_LIDO_P)   / NULLIF(ant.CONSUMO_LIDO_P,   0)) * 100, 1) AS PERC_P
         FROM tb_dfat_gestao_faturas_energia_novo AS a
         INNER JOIN (
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
@@ -176,7 +176,7 @@ def buscar_variacao_consumo():
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
             ON a.COD_INSTALACAO = ant.COD_INSTALACAO
-           AND ant.REFERENCIA = (a.REFERENCIA - 100)
+           AND ant.REFERENCIA = DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR)
         INNER JOIN tb_clientes_gestao_faturas AS c
             ON a.COD_INSTALACAO = c.INSTALACAO_MATRICULA
         WHERE c.UTILIDADE = 'ENERGIA'
@@ -204,10 +204,10 @@ def buscar_variacao_valor():
             a.COD_INSTALACAO,
             c.GRUPO,
             c.NOME_UNIDADE,
-            a.REFERENCIA                                                          AS REF_ATUAL,
-            (a.REFERENCIA - 100)                                                  AS REF_ANTERIOR,
-            a.VALOR_TOTAL                                                         AS VALOR_ATUAL,
-            ant.VALOR_TOTAL                                                       AS VALOR_ANT,
+            DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
+            DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
+            a.VALOR_TOTAL                                                  AS VALOR_ATUAL,
+            ant.VALOR_TOTAL                                                AS VALOR_ANT,
             ROUND(((a.VALOR_TOTAL - ant.VALOR_TOTAL) / NULLIF(ant.VALOR_TOTAL, 0)) * 100, 1) AS PERC_VALOR
         FROM tb_dfat_gestao_faturas_energia_novo AS a
         INNER JOIN (
@@ -217,7 +217,7 @@ def buscar_variacao_valor():
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
             ON a.COD_INSTALACAO = ant.COD_INSTALACAO
-           AND ant.REFERENCIA = (a.REFERENCIA - 100)
+           AND ant.REFERENCIA = DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR)
         INNER JOIN tb_clientes_gestao_faturas AS c
             ON a.COD_INSTALACAO = c.INSTALACAO_MATRICULA
         WHERE c.UTILIDADE = 'ENERGIA'
