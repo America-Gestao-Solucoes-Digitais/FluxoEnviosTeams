@@ -35,7 +35,7 @@ SMTP_CONFIG = {
 # E-mail remetente e destinatário de teste
 EMAIL_REMETENTE = os.getenv("SMTP_USER")
 EMAIL_TESTE     = "guilherme.garcia@voraenergia.com.br"
-PERC_ALERTA     = 30   # % de aumento para disparar alerta
+PERC_ALERTA     = 60   # % de aumento para disparar alerta
 CHUNK_SIZE      = 50   # linhas por lote no fallback de EntityTooLarge (413)
 
 # Grupos a serem excluídos dos alertas
@@ -324,7 +324,8 @@ def montar_mensagem_html_emissao(df, grupo):
     for _, row in df.iterrows():
         ultima = row.get("ULTIMA_EMISSAO")
         ultima_fmt = pd.Timestamp(ultima).strftime("%d/%m/%Y") if pd.notna(ultima) else "Sem emissao"
-        dias = row.get("DIAS_SEM_EMISSAO", "-")
+        dias_raw = row.get("DIAS_SEM_EMISSAO")
+        dias = int(dias_raw) if pd.notna(dias_raw) else "-"
         linhas += (
             f"<tr>"
             f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
@@ -502,7 +503,8 @@ def montar_email_html_emissao(df, grupo):
     for _, row in df.iterrows():
         ultima = row.get("ULTIMA_EMISSAO")
         ultima_fmt = pd.Timestamp(ultima).strftime("%d/%m/%Y") if pd.notna(ultima) else "Sem emissao"
-        dias = row.get("DIAS_SEM_EMISSAO", "-")
+        dias_raw = row.get("DIAS_SEM_EMISSAO")
+        dias = int(dias_raw) if pd.notna(dias_raw) else "-"
         linhas += (
             f"<tr>"
             f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
@@ -681,11 +683,11 @@ def executar_vencimentos():
         enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html)
         corpo_email = montar_email_html_vencimentos(df_grupo, grupo)
         if corpo_email:
-            amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
-            assunto = f"[Vencimentos] {grupo} - {len(df_grupo)} fatura(s) para {amanha}"
-            enviar_email(assunto, corpo_email, emails_gestores(grupo))
+           amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+           assunto = f"[Vencimentos] {grupo} - {len(df_grupo)} fatura(s) para {amanha}"
+           enviar_email(assunto, corpo_email, emails_gestores(grupo))
         print("   Enviado com sucesso (Teams + e-mail)!")
-
+    
     print("\nTarefa concluida.")
 
 
