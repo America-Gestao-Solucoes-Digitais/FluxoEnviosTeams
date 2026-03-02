@@ -203,6 +203,7 @@ def buscar_variacao_consumo():
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
             FROM tb_dfat_gestao_faturas_energia_novo
             WHERE YEAR(REFERENCIA) >= 2026
+               OR DATE(TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
             GROUP BY COD_INSTALACAO
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
@@ -214,7 +215,7 @@ def buscar_variacao_consumo():
           AND c.STATUS_UNIDADE = 'Ativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
-          AND YEAR(a.REFERENCIA) >= 2026
+          AND (YEAR(a.REFERENCIA) >= 2026 OR DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY)
         HAVING PERC_FP > {PERC_ALERTA} OR PERC_P > {PERC_ALERTA}
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
@@ -246,6 +247,7 @@ def buscar_variacao_valor():
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
             FROM tb_dfat_gestao_faturas_energia_novo
             WHERE YEAR(REFERENCIA) >= 2026
+               OR DATE(TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
             GROUP BY COD_INSTALACAO
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
@@ -257,7 +259,7 @@ def buscar_variacao_valor():
           AND c.STATUS_UNIDADE = 'Ativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
-          AND YEAR(a.REFERENCIA) >= 2026
+          AND (YEAR(a.REFERENCIA) >= 2026 OR DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY)
         HAVING PERC_VALOR > {PERC_ALERTA}
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
@@ -681,7 +683,7 @@ def executar_vencimentos():
         if corpo_email:
             amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
             assunto = f"[Vencimentos] {grupo} - {len(df_grupo)} fatura(s) para {amanha}"
-            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+            enviar_email(assunto, corpo_email, emails_gestores(grupo))
         print("   Enviado com sucesso (Teams + e-mail)!")
 
     print("\nTarefa concluida.")
@@ -704,7 +706,7 @@ def executar_emissoes():
         corpo_email = montar_email_html_emissao(df_grupo, grupo)
         if corpo_email:
             assunto = f"[Emissoes Atrasadas] {grupo} - {len(df_grupo)} unidade(s) sem emissao >50 dias"
-            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+            enviar_email(assunto, corpo_email, emails_gestores(grupo))
         print("   Enviado com sucesso (Teams + e-mail)!")
 
     print("\nTarefa concluida.")
@@ -727,7 +729,7 @@ def executar_consumo():
         corpo_email = montar_email_html_consumo(df_grupo, grupo)
         if corpo_email:
             assunto = f"[Alerta Consumo] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
-            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+            enviar_email(assunto, corpo_email, emails_gestores(grupo))
         print("   Enviado com sucesso (Teams + e-mail)!")
 
     print("\nTarefa concluida.")
@@ -750,7 +752,7 @@ def executar_valores():
         corpo_email = montar_email_html_valor(df_grupo, grupo)
         if corpo_email:
             assunto = f"[Alerta Valor] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
-            enviar_email(assunto, corpo_email, [EMAIL_TESTE])
+            enviar_email(assunto, corpo_email, emails_gestores(grupo))
         print("   Enviado com sucesso (Teams + e-mail)!")
 
     print("\nTarefa concluida.")
