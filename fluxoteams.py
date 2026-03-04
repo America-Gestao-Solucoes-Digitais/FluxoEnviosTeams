@@ -82,6 +82,9 @@ GESTORES_POR_GRUPO = {
     "ZARA":           [
         {"email": "gustavo.felix@voraenergia.com.br",    "nome": "Gustavo Felix"},
     ],
+    "GRUPO MIME":     [
+        {"email": "caio.augusto@voraenergia.com.br",     "nome": "Caio Augusto"},
+    ],
     "KORA":           [
         {"email": "guilherme.viana@voraenergia.com.br",  "nome": "Guilherme Viana"},
     ],
