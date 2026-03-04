@@ -41,7 +41,7 @@ CHUNK_SIZE      = 50   # linhas por lote no fallback de EntityTooLarge (413)
 # Grupos a serem excluídos dos alertas
 GRUPOS_EXCLUIDOS = (
     "GPA", "OI", "ENEL X GD", "VENANCIO", "CVLB",
-    "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS", "LIVRE ACL", "DROGAL", "REDE AMERICAS"
+    "BRADESCO", "TELEFONICA", "GBZEnergia", "GDS", "LIVRE ACL", "DROGAL", "REDE AMERICAS", "INTEGRADA"
 )
 
 # Mapeamento de grupos para gestores.
@@ -680,6 +680,7 @@ def executar_vencimentos():
     print(f"      {len(df)} fatura(s) encontrada(s).")
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
     for grupo in df["GRUPO"].unique():
         df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
@@ -704,6 +705,7 @@ def executar_emissoes():
     print(f"      {len(df)} unidade(s) encontrada(s).")
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
     for grupo in df["GRUPO"].unique():
         df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
@@ -727,6 +729,7 @@ def executar_consumo():
     print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
     for grupo in df["GRUPO"].unique():
         df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
@@ -750,6 +753,7 @@ def executar_valores():
     print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
     for grupo in df["GRUPO"].unique():
         df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
         print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
