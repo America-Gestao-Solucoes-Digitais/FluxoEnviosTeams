@@ -183,8 +183,8 @@ def buscar_vencimentos_amanha():
 
 def buscar_variacao_consumo():
     """
-    Compara o consumo total (CONSUMO_FP_LIDO + CONSUMO_P_LIDO) da referência mais recente
-    (>= 2026) com o mesmo mês do ano anterior.
+    Compara o consumo total (CONSUMO_LIDO_FP + CONSUMO_LIDO_P) das faturas lidas hoje ou ontem
+    (TIMESTAMP) com o mesmo mês do ano anterior.
     Retorna unidades com variação de consumo total acima de PERC_ALERTA_CONSUMO %.
     """
     excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
@@ -197,18 +197,17 @@ def buscar_variacao_consumo():
             a.DISTRIBUIDORA,
             DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
             DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
-            (a.CONSUMO_FP_LIDO + a.CONSUMO_P_LIDO)                        AS CONSUMO_ATUAL,
-            (ant.CONSUMO_FP_LIDO + ant.CONSUMO_P_LIDO)                    AS CONSUMO_ANT,
+            (a.CONSUMO_LIDO_FP + a.CONSUMO_LIDO_P)                        AS CONSUMO_ATUAL,
+            (ant.CONSUMO_LIDO_FP + ant.CONSUMO_LIDO_P)                    AS CONSUMO_ANT,
             ROUND(
-                (((a.CONSUMO_FP_LIDO + a.CONSUMO_P_LIDO) - (ant.CONSUMO_FP_LIDO + ant.CONSUMO_P_LIDO))
-                / NULLIF((ant.CONSUMO_FP_LIDO + ant.CONSUMO_P_LIDO), 0)) * 100, 1
+                (((a.CONSUMO_LIDO_FP + a.CONSUMO_LIDO_P) - (ant.CONSUMO_LIDO_FP + ant.CONSUMO_LIDO_P))
+                / NULLIF((ant.CONSUMO_LIDO_FP + ant.CONSUMO_LIDO_P), 0)) * 100, 1
             )                                                              AS PERC_CONSUMO
         FROM tb_dfat_gestao_faturas_energia_novo AS a
         INNER JOIN (
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
             FROM tb_dfat_gestao_faturas_energia_novo
-            WHERE YEAR(REFERENCIA) >= 2026
-               OR DATE(TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
+            WHERE DATE(TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
             GROUP BY COD_INSTALACAO
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
@@ -220,7 +219,7 @@ def buscar_variacao_consumo():
           AND c.STATUS_UNIDADE = 'Ativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
-          AND (YEAR(a.REFERENCIA) >= 2026 OR DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY)
+          AND DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
         HAVING PERC_CONSUMO > {PERC_ALERTA_CONSUMO}
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
@@ -231,7 +230,8 @@ def buscar_variacao_consumo():
 
 def buscar_variacao_valor():
     """
-    Compara o VALOR_TOTAL da referência mais recente (>= 2026) com o mesmo mês do ano anterior.
+    Compara o VALOR_TOTAL das faturas lidas hoje ou ontem (TIMESTAMP)
+    com o mesmo mês do ano anterior.
     Retorna unidades com variação de valor acima de PERC_ALERTA %.
     """
     excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
@@ -251,8 +251,7 @@ def buscar_variacao_valor():
         INNER JOIN (
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
             FROM tb_dfat_gestao_faturas_energia_novo
-            WHERE YEAR(REFERENCIA) >= 2026
-               OR DATE(TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
+            WHERE DATE(TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
             GROUP BY COD_INSTALACAO
         ) AS ult ON a.COD_INSTALACAO = ult.COD_INSTALACAO AND a.REFERENCIA = ult.MAX_REF
         INNER JOIN tb_dfat_gestao_faturas_energia_novo AS ant
@@ -264,7 +263,7 @@ def buscar_variacao_valor():
           AND c.STATUS_UNIDADE = 'Ativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
-          AND (YEAR(a.REFERENCIA) >= 2026 OR DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY)
+          AND DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
         HAVING PERC_VALOR > {PERC_ALERTA}
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
