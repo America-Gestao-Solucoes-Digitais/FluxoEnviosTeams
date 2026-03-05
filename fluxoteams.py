@@ -35,7 +35,8 @@ SMTP_CONFIG = {
 # E-mail remetente e destinatário de teste
 EMAIL_REMETENTE = os.getenv("SMTP_USER")
 EMAIL_TESTE     = "guilherme.garcia@voraenergia.com.br"
-PERC_ALERTA     = 60   # % de aumento para disparar alerta
+PERC_ALERTA         = 60   # % de aumento para disparar alerta (valor total)
+PERC_ALERTA_CONSUMO = 30   # % de aumento para disparar alerta de consumo
 CHUNK_SIZE      = 50   # linhas por lote no fallback de EntityTooLarge (413)
 
 # Grupos a serem excluídos dos alertas
@@ -182,8 +183,9 @@ def buscar_vencimentos_amanha():
 
 def buscar_variacao_consumo():
     """
-    Compara o consumo (FP e P) da referência mais recente (>= 2026) com o mesmo mês do ano anterior.
-    Retorna unidades com variação de consumo FP ou P acima de PERC_ALERTA %.
+    Compara o consumo total (CONSUMO_FP_LIDO + CONSUMO_P_LIDO) da referência mais recente
+    (>= 2026) com o mesmo mês do ano anterior.
+    Retorna unidades com variação de consumo total acima de PERC_ALERTA_CONSUMO %.
     """
     excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
     conn = mysql.connector.connect(**DB_CONFIG)
@@ -195,12 +197,12 @@ def buscar_variacao_consumo():
             a.DISTRIBUIDORA,
             DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
             DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
-            a.CONSUMO_LIDO_FP                                              AS FP_ATUAL,
-            ant.CONSUMO_LIDO_FP                                            AS FP_ANT,
-            ROUND(((a.CONSUMO_LIDO_FP  - ant.CONSUMO_LIDO_FP)  / NULLIF(ant.CONSUMO_LIDO_FP,  0)) * 100, 1) AS PERC_FP,
-            a.CONSUMO_LIDO_P                                               AS P_ATUAL,
-            ant.CONSUMO_LIDO_P                                             AS P_ANT,
-            ROUND(((a.CONSUMO_LIDO_P   - ant.CONSUMO_LIDO_P)   / NULLIF(ant.CONSUMO_LIDO_P,   0)) * 100, 1) AS PERC_P
+            (a.CONSUMO_FP_LIDO + a.CONSUMO_P_LIDO)                        AS CONSUMO_ATUAL,
+            (ant.CONSUMO_FP_LIDO + ant.CONSUMO_P_LIDO)                    AS CONSUMO_ANT,
+            ROUND(
+                (((a.CONSUMO_FP_LIDO + a.CONSUMO_P_LIDO) - (ant.CONSUMO_FP_LIDO + ant.CONSUMO_P_LIDO))
+                / NULLIF((ant.CONSUMO_FP_LIDO + ant.CONSUMO_P_LIDO), 0)) * 100, 1
+            )                                                              AS PERC_CONSUMO
         FROM tb_dfat_gestao_faturas_energia_novo AS a
         INNER JOIN (
             SELECT COD_INSTALACAO, MAX(REFERENCIA) AS MAX_REF
@@ -219,7 +221,7 @@ def buscar_variacao_consumo():
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
           AND (YEAR(a.REFERENCIA) >= 2026 OR DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY)
-        HAVING PERC_FP > {PERC_ALERTA} OR PERC_P > {PERC_ALERTA}
+        HAVING PERC_CONSUMO > {PERC_ALERTA_CONSUMO}
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
     df = pd.read_sql(query, conn)
@@ -391,7 +393,7 @@ def montar_mensagem_html(df, grupo):
 
 
 def montar_mensagem_html_consumo(df, grupo):
-    """Monta tabela HTML com unidades com variação de consumo (FP ou P) acima de PERC_ALERTA %."""
+    """Monta tabela HTML com unidades com variação de consumo total acima de PERC_ALERTA_CONSUMO %."""
     if df.empty:
         return None
 
@@ -404,25 +406,21 @@ def montar_mensagem_html_consumo(df, grupo):
             f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{row.get('REF_ATUAL', '-')}</td>"
             f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
-            f"<td>{row.get('FP_ATUAL', '-')}</td>"
-            f"<td>{row.get('FP_ANT', '-')}</td>"
-            f"<td>{row.get('PERC_FP', '-')}%</td>"
-            f"<td>{row.get('P_ATUAL', '-')}</td>"
-            f"<td>{row.get('P_ANT', '-')}</td>"
-            f"<td>{row.get('PERC_P', '-')}%</td>"
+            f"<td>{row.get('CONSUMO_ATUAL', '-')}</td>"
+            f"<td>{row.get('CONSUMO_ANT', '-')}</td>"
+            f"<td>{row.get('PERC_CONSUMO', '-')}%</td>"
             f"</tr>"
         )
 
     return (
         f"{linha_gestores_html(grupo)}"
-        f"<b>Alerta de Consumo - Aumento &gt;{PERC_ALERTA}% (vs. A-1)</b><br>"
+        f"<b>Alerta de Consumo - Aumento &gt;{PERC_ALERTA_CONSUMO}% (vs. A-1)</b><br>"
         f"{len(df)} unidade(s) com variacao relevante<br><br>"
         f"<table>"
         f"<tr>"
         f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
         f"<th>Ref. Atual</th><th>Ref. A-1</th>"
-        f"<th>FP Atual</th><th>FP A-1</th><th>% FP</th>"
-        f"<th>P Atual</th><th>P A-1</th><th>% P</th>"
+        f"<th>Consumo Atual (kWh)</th><th>Consumo A-1 (kWh)</th><th>% Variacao</th>"
         f"</tr>"
         f"{linhas}"
         f"</table>"
@@ -572,7 +570,7 @@ def montar_email_html_vencimentos(df, grupo):
 
 
 def montar_email_html_consumo(df, grupo):
-    """Monta e-mail HTML formatado com tabela bordada para alerta de consumo."""
+    """Monta e-mail HTML formatado com tabela bordada para alerta de consumo total."""
     if df.empty:
         return None
 
@@ -585,12 +583,9 @@ def montar_email_html_consumo(df, grupo):
             f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
             f"<td>{row.get('REF_ATUAL', '-')}</td>"
             f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
-            f"<td>{row.get('FP_ATUAL', '-')}</td>"
-            f"<td>{row.get('FP_ANT', '-')}</td>"
-            f"<td>{row.get('PERC_FP', '-')}%</td>"
-            f"<td>{row.get('P_ATUAL', '-')}</td>"
-            f"<td>{row.get('P_ANT', '-')}</td>"
-            f"<td>{row.get('PERC_P', '-')}%</td>"
+            f"<td>{row.get('CONSUMO_ATUAL', '-')}</td>"
+            f"<td>{row.get('CONSUMO_ANT', '-')}</td>"
+            f"<td>{row.get('PERC_CONSUMO', '-')}%</td>"
             f"</tr>"
         )
 
@@ -599,14 +594,13 @@ def montar_email_html_consumo(df, grupo):
         f"<tr>"
         f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
         f"<th>Ref. Atual</th><th>Ref. A-1</th>"
-        f"<th>FP Atual</th><th>FP A-1</th><th>% FP</th>"
-        f"<th>P Atual</th><th>P A-1</th><th>% P</th>"
+        f"<th>Consumo Atual (kWh)</th><th>Consumo A-1 (kWh)</th><th>% Variacao</th>"
         f"</tr>{linhas}</table>"
     )
 
     return _envolver_email(
         titulo=f"Alerta de Consumo &mdash; {grupo}",
-        subtitulo=f"Aumento &gt;{PERC_ALERTA}% vs. mesmo m&ecirc;s do ano anterior &nbsp;|&nbsp; {len(df)} unidade(s)",
+        subtitulo=f"Aumento &gt;{PERC_ALERTA_CONSUMO}% vs. mesmo m&ecirc;s do ano anterior &nbsp;|&nbsp; {len(df)} unidade(s)",
         tabela_html=tabela,
     )
 
@@ -726,7 +720,7 @@ def executar_consumo():
 
     print(f"\n[1/2] Buscando variacao de consumo (>= 2026, vs. A-1)...")
     df = buscar_variacao_consumo()
-    print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
+    print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA_CONSUMO}%.")
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
     df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
@@ -736,7 +730,7 @@ def executar_consumo():
         enviar_grupo_com_chunks(df_grupo, grupo, montar_mensagem_html_consumo)
         corpo_email = montar_email_html_consumo(df_grupo, grupo)
         if corpo_email:
-            assunto = f"[Alerta Consumo] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
+            assunto = f"[Alerta Consumo] {grupo} - Aumento >{PERC_ALERTA_CONSUMO}% vs. A-1"
             enviar_email(assunto, corpo_email, emails_gestores(grupo))
         print("   Enviado com sucesso (Teams + e-mail)!")
 
