@@ -137,7 +137,7 @@ def buscar_unidades_sem_emissao():
         LEFT JOIN tb_dfat_gestao_faturas_energia_novo AS f
             ON c.INSTALACAO_MATRICULA = f.COD_INSTALACAO
         WHERE c.UTILIDADE = 'ENERGIA'
-          AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.STATUS_UNIDADE <> 'Inativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
         GROUP BY c.INSTALACAO_MATRICULA, c.GRUPO, c.NOME_UNIDADE, c.DISTRIBUIDORA
@@ -171,7 +171,7 @@ def buscar_vencimentos_amanha():
             ON f.COD_INSTALACAO = c.INSTALACAO_MATRICULA
         WHERE DATE(f.DATA_VENCIMENTO) = '{amanha}'
           AND c.UTILIDADE = 'ENERGIA'
-          AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.STATUS_UNIDADE <> 'Inativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
         ORDER BY c.GRUPO, c.NOME_UNIDADE
@@ -216,7 +216,7 @@ def buscar_variacao_consumo():
         INNER JOIN tb_clientes_gestao_faturas AS c
             ON a.COD_INSTALACAO = c.INSTALACAO_MATRICULA
         WHERE c.UTILIDADE = 'ENERGIA'
-          AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.STATUS_UNIDADE <> 'Inativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
           AND DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
@@ -260,7 +260,7 @@ def buscar_variacao_valor():
         INNER JOIN tb_clientes_gestao_faturas AS c
             ON a.COD_INSTALACAO = c.INSTALACAO_MATRICULA
         WHERE c.UTILIDADE = 'ENERGIA'
-          AND c.STATUS_UNIDADE = 'Ativa'
+          AND c.STATUS_UNIDADE <> 'Inativa'
           AND c.GRUPO IS NOT NULL
           AND c.GRUPO NOT IN ({excluidos})
           AND DATE(a.TIMESTAMP) >= CURDATE() - INTERVAL 1 DAY
