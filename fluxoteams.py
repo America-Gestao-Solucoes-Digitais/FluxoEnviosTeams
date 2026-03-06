@@ -1,4 +1,5 @@
 import os
+import warnings
 import argparse
 import smtplib
 import pandas as pd
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
 load_dotenv()
+
+warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 
 # ==========================================================
 # CONFIGURAÇÕES GERAIS
@@ -91,6 +94,20 @@ GESTORES_POR_GRUPO = {
     ],
 }
 
+# Gestores dos clientes de ÁGUA (canais dedicados no Teams)
+GESTORES_POR_GRUPO_AGUA = {
+    "DASA":           [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"}],
+    "REDE AMERICAS":  [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"}],
+    "MAGAZINE LUIZA": [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"}],
+}
+
+# Nome do canal Teams (switch no Power Automate) para cada grupo de água
+CANAL_TEAMS_AGUA = {
+    "DASA":           "DASA-AGUA",
+    "REDE AMERICAS":  "REDEAMERICAS-AGUA",
+    "MAGAZINE LUIZA": "MAGAZINE LUIZA-AGUA",
+}
+
 
 # ==========================================================
 # HELPERS — GESTORES
@@ -107,6 +124,22 @@ def linha_gestores_html(grupo):
     """Retorna linha HTML com menções <at>Nome</at> (formato Teams).
     O Power Automate usa esses nomes junto com os IDs de usuário para montar as menções reais."""
     gestores = GESTORES_POR_GRUPO.get(grupo, [])
+    if not gestores:
+        return ""
+    mencoes = ", ".join(f'<at>{g["nome"]}</at>' for g in gestores)
+    return f"<b>Gestores:</b> {mencoes}<br><br>"
+
+
+def emails_gestores_agua(grupo):
+    return [g["email"] for g in GESTORES_POR_GRUPO_AGUA.get(grupo, [])]
+
+
+def nomes_gestores_agua(grupo):
+    return [g["nome"] for g in GESTORES_POR_GRUPO_AGUA.get(grupo, [])]
+
+
+def linha_gestores_html_agua(grupo):
+    gestores = GESTORES_POR_GRUPO_AGUA.get(grupo, [])
     if not gestores:
         return ""
     mencoes = ", ".join(f'<at>{g["nome"]}</at>' for g in gestores)
@@ -181,6 +214,94 @@ def buscar_vencimentos_amanha():
     return df
 
 
+def buscar_variacao_consumo_agua():
+    """
+    Compara o CONSUMO (m³) das faturas de água lidas hoje ou ontem (LOG)
+    com o mesmo mês do ano anterior.
+    Retorna unidades com variação acima de PERC_ALERTA_CONSUMO %.
+    """
+    excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = f"""
+        SELECT
+            a.MATRICULA,
+            c.GRUPO,
+            c.NOME_UNIDADE,
+            c.DISTRIBUIDORA,
+            DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
+            DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
+            a.CONSUMO                                                      AS CONSUMO_ATUAL,
+            ant.CONSUMO                                                    AS CONSUMO_ANT,
+            ROUND(
+                ((a.CONSUMO - ant.CONSUMO) / NULLIF(ant.CONSUMO, 0)) * 100, 1
+            )                                                              AS PERC_CONSUMO
+        FROM tb_dfat_gestao_faturas_agua AS a
+        INNER JOIN (
+            SELECT MATRICULA, MAX(REFERENCIA) AS MAX_REF
+            FROM tb_dfat_gestao_faturas_agua
+            WHERE DATE(LOG) >= CURDATE() - INTERVAL 1 DAY
+            GROUP BY MATRICULA
+        ) AS ult ON a.MATRICULA = ult.MATRICULA AND a.REFERENCIA = ult.MAX_REF
+        INNER JOIN tb_dfat_gestao_faturas_agua AS ant
+            ON a.MATRICULA = ant.MATRICULA
+           AND ant.REFERENCIA = DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR)
+        INNER JOIN tb_clientes_gestao_faturas AS c
+            ON a.MATRICULA = c.INSTALACAO_MATRICULA
+        WHERE c.UTILIDADE = 'AGUA'
+          AND c.STATUS_UNIDADE <> 'Inativa'
+          AND c.GRUPO IS NOT NULL
+          AND DATE(a.LOG) >= CURDATE() - INTERVAL 1 DAY
+        HAVING PERC_CONSUMO > {PERC_ALERTA_CONSUMO}
+        ORDER BY c.GRUPO, c.NOME_UNIDADE
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+
+def buscar_variacao_valor_agua():
+    """
+    Compara o TOTAL das faturas de água lidas hoje ou ontem (LOG)
+    com o mesmo mês do ano anterior.
+    Retorna unidades com variação acima de PERC_ALERTA %.
+    """
+    excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = f"""
+        SELECT
+            a.MATRICULA,
+            c.GRUPO,
+            c.NOME_UNIDADE,
+            c.DISTRIBUIDORA,
+            DATE_FORMAT(a.REFERENCIA, '%Y%m')                              AS REF_ATUAL,
+            DATE_FORMAT(DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR), '%Y%m')  AS REF_ANTERIOR,
+            a.TOTAL                                                        AS VALOR_ATUAL,
+            ant.TOTAL                                                      AS VALOR_ANT,
+            ROUND(((a.TOTAL - ant.TOTAL) / NULLIF(ant.TOTAL, 0)) * 100, 1) AS PERC_VALOR
+        FROM tb_dfat_gestao_faturas_agua AS a
+        INNER JOIN (
+            SELECT MATRICULA, MAX(REFERENCIA) AS MAX_REF
+            FROM tb_dfat_gestao_faturas_agua
+            WHERE DATE(LOG) >= CURDATE() - INTERVAL 1 DAY
+            GROUP BY MATRICULA
+        ) AS ult ON a.MATRICULA = ult.MATRICULA AND a.REFERENCIA = ult.MAX_REF
+        INNER JOIN tb_dfat_gestao_faturas_agua AS ant
+            ON a.MATRICULA = ant.MATRICULA
+           AND ant.REFERENCIA = DATE_SUB(a.REFERENCIA, INTERVAL 1 YEAR)
+        INNER JOIN tb_clientes_gestao_faturas AS c
+            ON a.MATRICULA = c.INSTALACAO_MATRICULA
+        WHERE c.UTILIDADE = 'AGUA'
+          AND c.STATUS_UNIDADE <> 'Inativa'
+          AND c.GRUPO IS NOT NULL
+          AND DATE(a.LOG) >= CURDATE() - INTERVAL 1 DAY
+        HAVING PERC_VALOR > {PERC_ALERTA}
+        ORDER BY c.GRUPO, c.NOME_UNIDADE
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+
 def buscar_vencimentos_agua():
     """
     Busca as faturas de ÁGUA com vencimento amanhã, fazendo JOIN entre:
@@ -193,20 +314,19 @@ def buscar_vencimentos_agua():
     conn = mysql.connector.connect(**DB_CONFIG)
     query = f"""
         SELECT
-            f.COD_INSTALACAO,
-            f.DATA_VENCIMENTO,
-            f.VALOR_TOTAL,
+            f.MATRICULA,
+            f.VENCIMENTO,
+            f.TOTAL,
             c.GRUPO,
             c.NOME_UNIDADE,
             c.DISTRIBUIDORA
         FROM tb_dfat_gestao_faturas_agua AS f
         INNER JOIN tb_clientes_gestao_faturas AS c
-            ON f.COD_INSTALACAO = c.INSTALACAO_MATRICULA
-        WHERE DATE(f.DATA_VENCIMENTO) = '{amanha}'
+            ON f.MATRICULA = c.INSTALACAO_MATRICULA
+        WHERE DATE(f.VENCIMENTO) = '{amanha}'
           AND c.UTILIDADE = 'AGUA'
           AND c.STATUS_UNIDADE <> 'Inativa'
           AND c.GRUPO IS NOT NULL
-          AND c.GRUPO NOT IN ({excluidos})
         ORDER BY c.GRUPO, c.NOME_UNIDADE
     """
     df = pd.read_sql(query, conn)
@@ -319,6 +439,27 @@ def enviar_via_webhook(mensagem_html, grupo):
             "message":         mensagem_html,
             "gestores":        ";".join(emails_gestores(grupo)),  # emails para lookup de ID no PA
             "gestores_nomes":  ";".join(nomes_gestores(grupo)),   # nomes para texto da menção
+        },
+        headers={"Content-Type": "application/json"},
+        timeout=10,
+    )
+    print(f"   Status: {resp.status_code}")
+    if resp.status_code not in (200, 201, 202):
+        print(f"   Resposta: {resp.text[:500]}")
+    resp.raise_for_status()
+
+
+def enviar_via_webhook_agua(mensagem_html, grupo):
+    """Envia mensagem HTML para o canal de água no Teams via webhook.
+    Usa CANAL_TEAMS_AGUA para rotear para o canal correto no Power Automate."""
+    canal = CANAL_TEAMS_AGUA.get(grupo, grupo)
+    resp = requests.post(
+        URL_WEBHOOK,
+        json={
+            "grupo":          canal,
+            "message":        mensagem_html,
+            "gestores":       ";".join(emails_gestores_agua(grupo)),
+            "gestores_nomes": ";".join(nomes_gestores_agua(grupo)),
         },
         headers={"Content-Type": "application/json"},
         timeout=10,
@@ -490,6 +631,80 @@ def montar_mensagem_html_valor(df, grupo):
         f"<table>"
         f"<tr>"
         f"<th>Unidade</th><th>Instalacao</th><th>Distribuidora</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>Valor Atual</th><th>Valor A-1</th><th>% Variacao</th>"
+        f"</tr>"
+        f"{linhas}"
+        f"</table>"
+    )
+
+
+def montar_mensagem_html_consumo_agua(df, grupo):
+    """Monta tabela HTML com unidades de água com variação de consumo acima de PERC_ALERTA_CONSUMO %."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{row.get('CONSUMO_ATUAL', '-')} m³</td>"
+            f"<td>{row.get('CONSUMO_ANT', '-')} m³</td>"
+            f"<td>{row.get('PERC_CONSUMO', '-')}%</td>"
+            f"</tr>"
+        )
+
+    return (
+        f"{linha_gestores_html_agua(grupo)}"
+        f"<b>Alerta de Consumo (Agua) - Aumento &gt;{PERC_ALERTA_CONSUMO}% (vs. A-1)</b><br>"
+        f"{len(df)} unidade(s) com variacao relevante<br><br>"
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Matricula</th><th>Distribuidora</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>Consumo Atual (m³)</th><th>Consumo A-1 (m³)</th><th>% Variacao</th>"
+        f"</tr>"
+        f"{linhas}"
+        f"</table>"
+    )
+
+
+def montar_mensagem_html_valor_agua(df, grupo):
+    """Monta tabela HTML com unidades de água com variação de valor acima de PERC_ALERTA %."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        v_atual = float(row.get("VALOR_ATUAL", 0) or 0)
+        v_ant   = float(row.get("VALOR_ANT",   0) or 0)
+        v_atual_fmt = f"R$ {v_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        v_ant_fmt   = f"R$ {v_ant:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{v_atual_fmt}</td>"
+            f"<td>{v_ant_fmt}</td>"
+            f"<td>{row.get('PERC_VALOR', '-')}%</td>"
+            f"</tr>"
+        )
+
+    return (
+        f"{linha_gestores_html_agua(grupo)}"
+        f"<b>Alerta de Valor Total (Agua) - Aumento &gt;{PERC_ALERTA}% (vs. A-1)</b><br>"
+        f"{len(df)} unidade(s) com variacao relevante<br><br>"
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Matricula</th><th>Distribuidora</th>"
         f"<th>Ref. Atual</th><th>Ref. A-1</th>"
         f"<th>Valor Atual</th><th>Valor A-1</th><th>% Variacao</th>"
         f"</tr>"
@@ -677,6 +892,82 @@ def montar_email_html_valor(df, grupo):
     )
 
 
+def montar_email_html_consumo_agua(df, grupo):
+    """Monta e-mail HTML formatado para alerta de consumo de água."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{row.get('CONSUMO_ATUAL', '-')} m³</td>"
+            f"<td>{row.get('CONSUMO_ANT', '-')} m³</td>"
+            f"<td>{row.get('PERC_CONSUMO', '-')}%</td>"
+            f"</tr>"
+        )
+
+    tabela = (
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Matricula</th><th>Distribuidora</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>Consumo Atual (m³)</th><th>Consumo A-1 (m³)</th><th>% Variacao</th>"
+        f"</tr>{linhas}</table>"
+    )
+
+    return _envolver_email(
+        titulo=f"Alerta de Consumo (&Aacute;gua) &mdash; {grupo}",
+        subtitulo=f"Aumento &gt;{PERC_ALERTA_CONSUMO}% vs. mesmo m&ecirc;s do ano anterior &nbsp;|&nbsp; {len(df)} unidade(s)",
+        tabela_html=tabela,
+    )
+
+
+def montar_email_html_valor_agua(df, grupo):
+    """Monta e-mail HTML formatado para alerta de valor total de água."""
+    if df.empty:
+        return None
+
+    linhas = ""
+    for _, row in df.iterrows():
+        v_atual = float(row.get("VALOR_ATUAL", 0) or 0)
+        v_ant   = float(row.get("VALOR_ANT",   0) or 0)
+        v_atual_fmt = f"R$ {v_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        v_ant_fmt   = f"R$ {v_ant:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{row.get('REF_ATUAL', '-')}</td>"
+            f"<td>{row.get('REF_ANTERIOR', '-')}</td>"
+            f"<td>{v_atual_fmt}</td>"
+            f"<td>{v_ant_fmt}</td>"
+            f"<td>{row.get('PERC_VALOR', '-')}%</td>"
+            f"</tr>"
+        )
+
+    tabela = (
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Matricula</th><th>Distribuidora</th>"
+        f"<th>Ref. Atual</th><th>Ref. A-1</th>"
+        f"<th>Valor Atual</th><th>Valor A-1</th><th>% Variacao</th>"
+        f"</tr>{linhas}</table>"
+    )
+
+    return _envolver_email(
+        titulo=f"Alerta de Valor Total (&Aacute;gua) &mdash; {grupo}",
+        subtitulo=f"Aumento &gt;{PERC_ALERTA}% vs. mesmo m&ecirc;s do ano anterior &nbsp;|&nbsp; {len(df)} unidade(s)",
+        tabela_html=tabela,
+    )
+
+
 def enviar_email(assunto, corpo_html, destinatarios):
     """Envia e-mail HTML via SMTP Office 365 (smtp.office365.com:587 com STARTTLS)."""
     msg = MIMEMultipart("alternative")
@@ -704,6 +995,10 @@ def executar_vencimentos():
     print("\n[1/2] Buscando vencimentos de amanha...")
     df = buscar_vencimentos_amanha()
     print(f"      {len(df)} fatura(s) encontrada(s).")
+    if df.empty:
+        print("      Nenhum vencimento encontrado. Pulando envios.")
+        print("\nTarefa concluida.")
+        return
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
     df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
@@ -729,6 +1024,10 @@ def executar_emissoes():
     print("\n[1/2] Buscando unidades com emissao atrasada (>50 dias)...")
     df = buscar_unidades_sem_emissao()
     print(f"      {len(df)} unidade(s) encontrada(s).")
+    if df.empty:
+        print("      Nenhuma unidade com emissao atrasada. Pulando envios.")
+        print("\nTarefa concluida.")
+        return
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
     df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
@@ -753,6 +1052,10 @@ def executar_consumo():
     print(f"\n[1/2] Buscando variacao de consumo (>= 2026, vs. A-1)...")
     df = buscar_variacao_consumo()
     print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA_CONSUMO}%.")
+    if df.empty:
+        print("      Nenhuma variacao relevante encontrada. Pulando envios.")
+        print("\nTarefa concluida.")
+        return
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
     df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
@@ -777,6 +1080,10 @@ def executar_valores():
     print(f"\n[1/2] Buscando variacao de valor total (>= 2026, vs. A-1)...")
     df = buscar_variacao_valor()
     print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
+    if df.empty:
+        print("      Nenhuma variacao relevante encontrada. Pulando envios.")
+        print("\nTarefa concluida.")
+        return
 
     print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
     df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO)]
@@ -800,8 +1107,74 @@ def executar_vencimentos_agua():
 
     print("\n[1/1] Buscando vencimentos de agua para amanha...")
     df = buscar_vencimentos_agua()
-    print(f"      {len(df)} fatura(s) encontrada(s).\n")
+    print(f"      {len(df)} fatura(s) encontrada(s).")
+    if df.empty:
+        print("      Nenhum vencimento de agua encontrado.")
+        print("\nTarefa concluida.")
+        return
+
+    print()
     print(df.to_string(index=False))
+    print("\nTarefa concluida.")
+
+
+def executar_consumo_agua():
+    print("\n" + "=" * 50)
+    print("TAREFA: Variacao de consumo de agua (vs. A-1)")
+    print("=" * 50)
+
+    print(f"\n[1/2] Buscando variacao de consumo de agua (>{PERC_ALERTA_CONSUMO}%, vs. A-1)...")
+    df = buscar_variacao_consumo_agua()
+    print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA_CONSUMO}%.")
+    if df.empty:
+        print("      Nenhuma variacao relevante encontrada. Pulando envios.")
+        print("\nTarefa concluida.")
+        return
+
+    print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO_AGUA)]
+    for grupo in df["GRUPO"].unique():
+        df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+        mensagem = montar_mensagem_html_consumo_agua(df_grupo, grupo)
+        if mensagem:
+            enviar_via_webhook_agua(mensagem, grupo)
+        corpo_email = montar_email_html_consumo_agua(df_grupo, grupo)
+        if corpo_email:
+            assunto = f"[Alerta Consumo Agua] {grupo} - Aumento >{PERC_ALERTA_CONSUMO}% vs. A-1"
+            enviar_email(assunto, corpo_email, emails_gestores_agua(grupo))
+        print("   Enviado com sucesso (Teams + e-mail)!")
+
+    print("\nTarefa concluida.")
+
+
+def executar_valores_agua():
+    print("\n" + "=" * 50)
+    print("TAREFA: Variacao de valor total de agua (vs. A-1)")
+    print("=" * 50)
+
+    print(f"\n[1/2] Buscando variacao de valor total de agua (>{PERC_ALERTA}%, vs. A-1)...")
+    df = buscar_variacao_valor_agua()
+    print(f"      {len(df)} unidade(s) com variacao acima de {PERC_ALERTA}%.")
+    if df.empty:
+        print("      Nenhuma variacao relevante encontrada. Pulando envios.")
+        print("\nTarefa concluida.")
+        return
+
+    print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO_AGUA)]
+    for grupo in df["GRUPO"].unique():
+        df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} unidade(s))")
+        mensagem = montar_mensagem_html_valor_agua(df_grupo, grupo)
+        if mensagem:
+            enviar_via_webhook_agua(mensagem, grupo)
+        corpo_email = montar_email_html_valor_agua(df_grupo, grupo)
+        if corpo_email:
+            assunto = f"[Alerta Valor Agua] {grupo} - Aumento >{PERC_ALERTA}% vs. A-1"
+            enviar_email(assunto, corpo_email, emails_gestores_agua(grupo))
+        print("   Enviado com sucesso (Teams + e-mail)!")
+
     print("\nTarefa concluida.")
 
 
@@ -810,6 +1183,9 @@ def executar_fluxo():
     print("=" * 50)
     print("Iniciando fluxo completo")
     print("=" * 50)
+    executar_vencimentos_agua()
+    executar_consumo_agua()
+    executar_valores_agua()
     executar_valores()
     executar_consumo()
     executar_emissoes()
@@ -836,7 +1212,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--tarefa",
-        choices=["valores", "consumos", "emissoes", "vencimentos", "vencimentos_agua"],
+        choices=["valores", "consumos", "emissoes", "vencimentos", "vencimentos_agua", "consumos_agua", "valores_agua"],
         default=None,
         help=(
             "Tarefa a executar isoladamente. "
@@ -852,6 +1228,8 @@ if __name__ == "__main__":
         "emissoes":         executar_emissoes,
         "vencimentos":      executar_vencimentos,
         "vencimentos_agua": executar_vencimentos_agua,
+        "consumos_agua":    executar_consumo_agua,
+        "valores_agua":     executar_valores_agua,
     }
 
     fn = TAREFAS.get(args.tarefa)
