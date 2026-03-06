@@ -181,6 +181,39 @@ def buscar_vencimentos_amanha():
     return df
 
 
+def buscar_vencimentos_agua():
+    """
+    Busca as faturas de ÁGUA com vencimento amanhã, fazendo JOIN entre:
+      - tb_dfat_gestao_faturas_agua   (coluna COD_INSTALACAO)
+      - tb_clientes_gestao_faturas    (coluna INSTALACAO_MATRICULA, UTILIDADE = 'AGUA')
+    """
+    amanha = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    excluidos = ", ".join(f"'{g}'" for g in GRUPOS_EXCLUIDOS)
+
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = f"""
+        SELECT
+            f.COD_INSTALACAO,
+            f.DATA_VENCIMENTO,
+            f.VALOR_TOTAL,
+            c.GRUPO,
+            c.NOME_UNIDADE,
+            c.DISTRIBUIDORA
+        FROM tb_dfat_gestao_faturas_agua AS f
+        INNER JOIN tb_clientes_gestao_faturas AS c
+            ON f.COD_INSTALACAO = c.INSTALACAO_MATRICULA
+        WHERE DATE(f.DATA_VENCIMENTO) = '{amanha}'
+          AND c.UTILIDADE = 'AGUA'
+          AND c.STATUS_UNIDADE <> 'Inativa'
+          AND c.GRUPO IS NOT NULL
+          AND c.GRUPO NOT IN ({excluidos})
+        ORDER BY c.GRUPO, c.NOME_UNIDADE
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+
 def buscar_variacao_consumo():
     """
     Compara o consumo total (CONSUMO_LIDO_FP + CONSUMO_LIDO_P) das faturas lidas hoje ou ontem
@@ -760,6 +793,18 @@ def executar_valores():
     print("\nTarefa concluida.")
 
 
+def executar_vencimentos_agua():
+    print("\n" + "=" * 50)
+    print("TAREFA: Vencimentos de agua (amanha) — apenas visualizacao")
+    print("=" * 50)
+
+    print("\n[1/1] Buscando vencimentos de agua para amanha...")
+    df = buscar_vencimentos_agua()
+    print(f"      {len(df)} fatura(s) encontrada(s).\n")
+    print(df.to_string(index=False))
+    print("\nTarefa concluida.")
+
+
 def executar_fluxo():
     """Executa todas as tarefas em sequência (equivale a rodar sem --tarefa)."""
     print("=" * 50)
@@ -791,7 +836,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--tarefa",
-        choices=["valores", "consumos", "emissoes", "vencimentos"],
+        choices=["valores", "consumos", "emissoes", "vencimentos", "vencimentos_agua"],
         default=None,
         help=(
             "Tarefa a executar isoladamente. "
@@ -802,10 +847,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     TAREFAS = {
-        "valores":     executar_valores,
-        "consumos":    executar_consumo,
-        "emissoes":    executar_emissoes,
-        "vencimentos": executar_vencimentos,
+        "valores":          executar_valores,
+        "consumos":         executar_consumo,
+        "emissoes":         executar_emissoes,
+        "vencimentos":      executar_vencimentos,
+        "vencimentos_agua": executar_vencimentos_agua,
     }
 
     fn = TAREFAS.get(args.tarefa)
