@@ -639,6 +639,46 @@ def montar_mensagem_html_valor(df, grupo):
     )
 
 
+def montar_mensagem_html_vencimentos_agua(df, grupo):
+    """Monta tabela HTML com os vencimentos de água do dia seguinte."""
+    amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+
+    if df.empty:
+        return (
+            f"{linha_gestores_html_agua(grupo)}"
+            f"<b>Vencimentos de Agua para amanha - {amanha}</b><br>"
+            "Nenhuma fatura encontrada."
+        )
+
+    total_geral = float(df["TOTAL"].sum())
+    total_fmt = f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    total_faturas = len(df)
+
+    linhas = ""
+    for _, row in df.iterrows():
+        valor = float(row.get("TOTAL", 0))
+        valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{amanha}</td>"
+            f"<td>{valor_fmt}</td>"
+            f"</tr>"
+        )
+
+    return (
+        f"{linha_gestores_html_agua(grupo)}"
+        f"<b>Vencimentos de Agua para amanha - {amanha}</b><br>"
+        f"{total_faturas} fatura(s) &nbsp;|&nbsp; Total: {total_fmt}<br><br>"
+        f"<table>"
+        f"<tr><th>Unidade</th><th>Matricula</th><th>Distribuidora</th><th>Vencimento</th><th>Valor (R$)</th></tr>"
+        f"{linhas}"
+        f"</table>"
+    )
+
+
 def montar_mensagem_html_consumo_agua(df, grupo):
     """Monta tabela HTML com unidades de água com variação de consumo acima de PERC_ALERTA_CONSUMO %."""
     if df.empty:
@@ -892,6 +932,44 @@ def montar_email_html_valor(df, grupo):
     )
 
 
+def montar_email_html_vencimentos_agua(df, grupo):
+    """Monta e-mail HTML formatado com tabela bordada para vencimentos de água do dia seguinte."""
+    if df.empty:
+        return None
+
+    amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+    total_geral = float(df["TOTAL"].sum())
+    total_fmt = f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    linhas = ""
+    for _, row in df.iterrows():
+        valor = float(row.get("TOTAL", 0))
+        valor_fmt = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        linhas += (
+            f"<tr>"
+            f"<td>{row.get('NOME_UNIDADE', '-')}</td>"
+            f"<td>{row.get('MATRICULA', '-')}</td>"
+            f"<td>{row.get('DISTRIBUIDORA', '-')}</td>"
+            f"<td>{amanha}</td>"
+            f"<td>{valor_fmt}</td>"
+            f"</tr>"
+        )
+
+    tabela = (
+        f"<table>"
+        f"<tr>"
+        f"<th>Unidade</th><th>Matricula</th><th>Distribuidora</th>"
+        f"<th>Vencimento</th><th>Valor (R$)</th>"
+        f"</tr>{linhas}</table>"
+    )
+
+    return _envolver_email(
+        titulo=f"Vencimentos de &Aacute;gua para amanh&atilde; &mdash; {grupo}",
+        subtitulo=f"{len(df)} fatura(s) &nbsp;|&nbsp; Total: {total_fmt}",
+        tabela_html=tabela,
+    )
+
+
 def montar_email_html_consumo_agua(df, grupo):
     """Monta e-mail HTML formatado para alerta de consumo de água."""
     if df.empty:
@@ -1102,19 +1180,32 @@ def executar_valores():
 
 def executar_vencimentos_agua():
     print("\n" + "=" * 50)
-    print("TAREFA: Vencimentos de agua (amanha) — apenas visualizacao")
+    print("TAREFA: Vencimentos de agua (amanha)")
     print("=" * 50)
 
-    print("\n[1/1] Buscando vencimentos de agua para amanha...")
+    print("\n[1/2] Buscando vencimentos de agua para amanha...")
     df = buscar_vencimentos_agua()
     print(f"      {len(df)} fatura(s) encontrada(s).")
     if df.empty:
-        print("      Nenhum vencimento de agua encontrado.")
+        print("      Nenhum vencimento de agua encontrado. Pulando envios.")
         print("\nTarefa concluida.")
         return
 
-    print()
-    print(df.to_string(index=False))
+    print("\n[2/2] Enviando por grupo (Teams + e-mail)...")
+    df = df[df["GRUPO"].isin(GESTORES_POR_GRUPO_AGUA)]
+    for grupo in df["GRUPO"].unique():
+        df_grupo = df[df["GRUPO"] == grupo].reset_index(drop=True)
+        print(f"\n   Grupo: {grupo} ({len(df_grupo)} fatura(s))")
+        mensagem = montar_mensagem_html_vencimentos_agua(df_grupo, grupo)
+        if mensagem:
+            enviar_via_webhook_agua(mensagem, grupo)
+        corpo_email = montar_email_html_vencimentos_agua(df_grupo, grupo)
+        if corpo_email:
+            amanha = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+            assunto = f"[Vencimentos Agua] {grupo} - {len(df_grupo)} fatura(s) para {amanha}"
+            enviar_email(assunto, corpo_email, emails_gestores_agua(grupo))
+        print("   Enviado com sucesso (Teams + e-mail)!")
+
     print("\nTarefa concluida.")
 
 
