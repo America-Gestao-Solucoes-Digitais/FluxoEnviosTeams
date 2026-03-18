@@ -47,7 +47,7 @@ EMAILS_CC           = ["caio.augusto@voraenergia.com.br", "pedro.queiroz@voraene
 PERC_ALERTA         = 30   # % limiar de variação de valor total
 PERC_ALERTA_CONSUMO = 30   # % limiar de variação de consumo
 CHUNK_SIZE          = 50   # linhas por lote no fallback 413 (EntityTooLarge)
-DIAS_TOLERANCIA     = 3    # janela de leitura (hoje − N dias) para TIMESTAMP/LOG
+DIAS_TOLERANCIA     = 3 if datetime.now().weekday() == 0 else 1  # segunda=3 dias (sex+sáb+dom), demais=1 dia
 
 GRUPOS_EXCLUIDOS = (
     "GPA", "OI", "ENEL X GD", "VENANCIO", "CVLB",
