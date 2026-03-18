@@ -78,9 +78,13 @@ GESTORES_POR_GRUPO = {
 }
 
 GESTORES_POR_GRUPO_AGUA = {
-    "DASA":           [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"}],
+    "DASA":           [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"},
+                       {"email": "sabrina.gomes@voraenergia.com.br", "nome": "Sabrina Gomes"}],
+    
     "REDE AMERICAS":  [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"}],
-    "MAGAZINE LUIZA": [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"}],
+    
+    "MAGAZINE LUIZA": [{"email": "aline.granadier@voraenergia.com.br", "nome": "Aline Granadier"},
+                       {"email": "gabriela.lecchi@voraenergia.com.br", "nome": "Gabriela Lecchi"}],
 }
 
 CANAL_TEAMS_AGUA = {
