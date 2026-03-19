@@ -155,6 +155,7 @@ def buscar_vencimentos_amanha():
     query = f"""
         SELECT
             f.COD_INSTALACAO,
+            f.REFERENCIA,
             f.DATA_VENCIMENTO,
             f.VALOR_TOTAL,
             c.GRUPO,
@@ -258,6 +259,7 @@ def buscar_vencimentos_agua():
         SELECT
             f.MATRICULA,
             f.VENCIMENTO,
+            f.REFERENCIA,
             f.TOTAL,
             c.GRUPO,
             c.NOME_UNIDADE,
